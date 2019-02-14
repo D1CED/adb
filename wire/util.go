@@ -1,101 +1,87 @@
 package wire
 
 import (
-	"fmt"
 	"io"
+	"os"
 	"regexp"
-	"sync"
+	"strconv"
 
-	"github.com/yosemite-open/go-adb/internal/errors"
+	"github.com/pkg/errors"
 )
 
-// ErrorResponseDetails is an error message returned by the server for a particular request.
-type ErrorResponseDetails struct {
-	Request   string
-	ServerMsg string
-}
-
-// deviceNotFoundMessagePattern matches all possible error messages returned by adb servers to
+// DeviceNotFoundMessagePattern matches all possible error messages returned by adb servers to
 // report that a matching device was not found. Used to set the DeviceNotFound error code on
 // error values.
 //
 // Old servers send "device not found", and newer ones "device 'serial' not found".
-var deviceNotFoundMessagePattern = regexp.MustCompile(`device( '.*')? not found`)
+var DeviceNotFoundMessagePattern = regexp.MustCompile(`device( '.*')? not found`)
 
-func adbServerError(request string, serverMsg string) error {
-	var msg string
-	if request == "" {
-		msg = fmt.Sprintf("server error: %s", serverMsg)
-	} else {
-		msg = fmt.Sprintf("server error for %s request: %s", request, serverMsg)
+func ReadTetra(r io.Reader) ([4]byte, error) {
+	var octet [4]byte
+	n, err := r.Read(octet[:])
+	if n != 4 || err != nil {
+		return [4]byte{}, errors.Wrap(err, "octet read failed")
 	}
-
-	errCode := errors.AdbError
-	if deviceNotFoundMessagePattern.MatchString(serverMsg) {
-		errCode = errors.DeviceNotFound
-	}
-
-	return &errors.Err{
-		Code:    errCode,
-		Message: msg,
-		Details: ErrorResponseDetails{
-			Request:   request,
-			ServerMsg: serverMsg,
-		},
-	}
+	return octet, nil
 }
 
-// IsAdbServerErrorMatching returns true if err is an *Err with code AdbError and for which
-// predicate returns true when passed Details.ServerMsg.
-func IsAdbServerErrorMatching(err error, predicate func(string) bool) bool {
-	if err, ok := err.(*errors.Err); ok && err.Code == errors.AdbError {
-		return predicate(err.Details.(ErrorResponseDetails).ServerMsg)
+func TetraToString(tetra [4]byte) string {
+	return string(tetra[:])
+}
+
+func HexTetraToLen(octet [4]byte) int {
+	len, err := strconv.ParseInt(string(octet[:]), 16, 32)
+	if err != nil {
+		return -1
 	}
-	return false
+	return int(len)
 }
 
-func errIncompleteMessage(description string, actual int, expected int) error {
-	return &errors.Err{
-		Code:    errors.ConnectionResetError,
-		Message: fmt.Sprintf("incomplete %s: read %d bytes, expecting %d", description, actual, expected),
-		Details: struct {
-			ActualReadBytes int
-			ExpectedBytes   int
-		}{
-			ActualReadBytes: actual,
-			ExpectedBytes:   expected,
-		},
+// TetraToUint32 converts an octet to an uint32 in little endian form.
+func TetraToUint32(octet [4]byte) uint32 {
+	var i uint32
+	for j := range octet {
+		i |= uint32(octet[j]) << (uint(j) * 8)
 	}
+	return i
 }
 
-// writeFully writes all of data to w.
-// Inverse of io.ReadFully().
-func writeFully(w io.Writer, data []byte) error {
-	offset := 0
-	for offset < len(data) {
-		n, err := w.Write(data[offset:])
-		if err != nil {
-			return errors.WrapErrorf(err, errors.NetworkError, "error writing %d bytes at offset %d", len(data), offset)
-		}
-		offset += n
+func Uint32ToTetra(u uint32) [4]byte {
+	var t [4]byte
+	for i := range t {
+		t[i] = byte(u >> uint(i) * 8)
 	}
-	return nil
+	return t
 }
 
-// MultiCloseable wraps c in a ReadWriteCloser that can be safely closed multiple times.
-func MultiCloseable(c io.ReadWriteCloser) io.ReadWriteCloser {
-	return &multiCloseable{ReadWriteCloser: c}
-}
+// ADB file modes seem to only be 16 bits.
+// Values are taken from http://linux.die.net/include/bits/stat.h.
+// These numbers are octal.
+const (
+	ModeDir        = 0040000
+	ModeSymlink    = 0120000
+	ModeSocket     = 0140000
+	ModeFifo       = 0010000
+	ModeCharDevice = 0020000
+)
 
-type multiCloseable struct {
-	io.ReadWriteCloser
-	closeOnce sync.Once
-	err       error
-}
-
-func (c *multiCloseable) Close() error {
-	c.closeOnce.Do(func() {
-		c.err = c.ReadWriteCloser.Close()
-	})
-	return c.err
+// ADBFileMode parses the mode returned by sync
+func ADBFileMode(mode uint32) os.FileMode {
+	// The ADB filemode uses the permission bits defined in Go's os package, but
+	// we need to parse the other bits manually.
+	var filemode os.FileMode
+	switch {
+	case mode&ModeSymlink == ModeSymlink:
+		filemode = os.ModeSymlink
+	case mode&ModeDir == ModeDir:
+		filemode = os.ModeDir
+	case mode&ModeSocket == ModeSocket:
+		filemode = os.ModeSocket
+	case mode&ModeFifo == ModeFifo:
+		filemode = os.ModeNamedPipe
+	case mode&ModeCharDevice == ModeCharDevice:
+		filemode = os.ModeCharDevice
+	}
+	filemode |= os.FileMode(mode).Perm()
+	return filemode
 }

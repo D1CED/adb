@@ -13,7 +13,7 @@ func TestGetAttribute(t *testing.T) {
 		Status:   wire.StatusSuccess,
 		Messages: []string{"value"},
 	}
-	client := (&Adb{s}).Device(DeviceWithSerial("serial"))
+	client := s.Device(DeviceWithSerial("serial"))
 
 	v, err := client.getAttribute("attr")
 	assert.Equal(t, "host-serial:serial:attr", s.Requests[0])
@@ -54,7 +54,7 @@ func TestGetDeviceInfo(t *testing.T) {
 }
 
 func newDeviceClientWithDeviceLister(serial string, deviceLister func() ([]*DeviceInfo, error)) *Device {
-	client := (&Adb{&MockServer{
+	client := (&ADB{&MockServer{
 		Status:   wire.StatusSuccess,
 		Messages: []string{serial},
 	}}).Device(DeviceWithSerial(serial))
@@ -67,7 +67,7 @@ func TestRunCommandNoArgs(t *testing.T) {
 		Status:   wire.StatusSuccess,
 		Messages: []string{"output"},
 	}
-	client := (&Adb{s}).Device(AnyDevice())
+	client := (&ADB{s}).Device(AnyDevice())
 
 	v, err := client.RunCommand("cmd")
 	assert.Equal(t, "host:transport-any", s.Requests[0])
@@ -81,7 +81,7 @@ func TestForward(t *testing.T) {
 		Status:   wire.StatusSuccess,
 		Messages: []string{""},
 	}
-	client := (&Adb{s}).Device(DeviceWithSerial("abc"))
+	client := (&ADB{s}).Device(DeviceWithSerial("abc"))
 	err := client.Forward(ForwardSpec{"tcp", "8999"}, ForwardSpec{"localabstract", "demo"})
 	assert.Equal(t, "host-serial:abc:forward:tcp:8999;localabstract:demo", s.Requests[0])
 	assert.NoError(t, err)

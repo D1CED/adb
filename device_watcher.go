@@ -8,8 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yosemite-open/go-adb/internal/errors"
-	"github.com/yosemite-open/go-adb/wire"
+	"github.com/pkg/errors"
 )
 
 /*
@@ -40,7 +39,7 @@ func (s DeviceStateChangedEvent) WentOffline() bool {
 }
 
 type deviceWatcherImpl struct {
-	server server
+	server *Server
 
 	// If an error occurs, it is stored here and eventChan is close immediately after.
 	err atomic.Value
@@ -48,18 +47,15 @@ type deviceWatcherImpl struct {
 	eventChan chan DeviceStateChangedEvent
 }
 
-func newDeviceWatcher(server server) *DeviceWatcher {
+func newDeviceWatcher(s *Server) *DeviceWatcher {
 	watcher := &DeviceWatcher{&deviceWatcherImpl{
-		server:    server,
+		server:    s,
 		eventChan: make(chan DeviceStateChangedEvent),
 	}}
-
 	runtime.SetFinalizer(watcher, func(watcher *DeviceWatcher) {
 		watcher.Shutdown()
 	})
-
 	go publishDevices(watcher.deviceWatcherImpl)
-
 	return watcher
 }
 
@@ -124,7 +120,7 @@ func publishDevices(watcher *deviceWatcherImpl) {
 			return
 		}
 
-		if HasErrCode(err, ConnectionResetError) {
+		if errors.Cause(err) == ConnectionResetError {
 			// The server died, restart and reconnect.
 
 			// Delay by a random [0ms, 500ms) in case multiple DeviceWatchers are trying to
@@ -146,26 +142,23 @@ func publishDevices(watcher *deviceWatcherImpl) {
 	}
 }
 
-func connectToTrackDevices(server server) (wire.Scanner, error) {
+func connectToTrackDevices(server *Server) (Conn, error) {
 	conn, err := server.Dial()
 	if err != nil {
 		return nil, err
 	}
-
-	if err := wire.SendMessageString(conn, "host:track-devices"); err != nil {
+	if err := conn.SendMessage([]byte("host:track-devices")); err != nil {
 		conn.Close()
 		return nil, err
 	}
-
 	if _, err := conn.ReadStatus("host:track-devices"); err != nil {
 		conn.Close()
 		return nil, err
 	}
-
 	return conn, nil
 }
 
-func publishDevicesUntilError(scanner wire.Scanner, eventChan chan<- DeviceStateChangedEvent, lastKnownStates *map[string]DeviceState) (finished bool, err error) {
+func publishDevicesUntilError(scanner Conn, eventChan chan<- DeviceStateChangedEvent, lastKnownStates *map[string]DeviceState) (finished bool, err error) {
 	for {
 		msg, err := scanner.ReadMessage()
 		if err != nil {
@@ -186,24 +179,19 @@ func publishDevicesUntilError(scanner wire.Scanner, eventChan chan<- DeviceState
 
 func parseDeviceStates(msg string) (states map[string]DeviceState, err error) {
 	states = make(map[string]DeviceState)
-
 	for lineNum, line := range strings.Split(msg, "\n") {
 		if len(line) == 0 {
 			continue
 		}
-
 		fields := strings.Split(line, "\t")
 		if len(fields) != 2 {
-			err = errors.Errorf(errors.ParseError, "invalid device state line %d: %s", lineNum, line)
+			err = errors.Wrapf(ParseError, "invalid device state line %d: %s", lineNum, line)
 			return
 		}
-
 		serial, stateString := fields[0], fields[1]
-		var state DeviceState
-		state, err = parseDeviceState(stateString)
+		state := parseDeviceState(stateString)
 		states[serial] = state
 	}
-
 	return
 }
 

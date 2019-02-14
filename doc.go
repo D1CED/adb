@@ -9,4 +9,8 @@ WARNING This library is under heavy development, and its API is likely to change
 */
 package adb
 
-// TODO(z): Write method-specific examples.
+/*
+main components should be:
+    adb.Connect() net.Conn
+    Device
+*/

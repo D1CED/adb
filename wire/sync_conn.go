@@ -1,10 +1,10 @@
 package wire
 
-import "github.com/yosemite-open/go-adb/internal/errors"
+import (
+	"bytes"
+	"io"
 
-const (
-	// Chunks cannot be longer than 64k.
-	SyncMaxChunkSize = 64 * 1024
+	"github.com/pkg/errors"
 )
 
 /*
@@ -25,13 +25,35 @@ File mode seems to be encoded as POSIX file mode.
 
 Modification time seems to be the Unix timestamp format, i.e. seconds since Epoch UTC.
 */
-type SyncConn struct {
-	SyncScanner
-	SyncSender
+
+// syncMaxChunkSize cannot be longer than 64k.
+const syncMaxChunkSize = 64 * 1024
+
+// request types
+const (
+	listRequest    = "LIST"
+	retriveRequest = "RECV"
+	sendRequest    = "SEND"
+	statRequest    = "STAT"
+)
+
+func (c *Conn) syncWrite(requestType string, msg string) (int64, error) {
+	if len(requestType) != 4 {
+		return 0, errors.Errorf("malformed requestType: %s", requestType)
+	}
+	t := Uint32ToTetra(uint32(len(msg)))
+	b := &bytes.Buffer{}
+	b.WriteString(requestType)
+	b.Write(t[:])
+	b.WriteString(msg)
+	return io.Copy(c.rw, b)
 }
 
-// Close closes both the sender and the scanner, and returns any errors.
-func (c SyncConn) Close() error {
-	return errors.CombineErrs("error closing SyncConn", errors.NetworkError,
-		c.SyncScanner.Close(), c.SyncSender.Close())
+func (c *Conn) syncStatus() Status {
+	t, err := ReadTetra(c.rw)
+	return Status{t, err}
+}
+
+func (c *Conn) syncRead(buf []byte) (int, error) {
+	return c.rw.Read(buf)
 }

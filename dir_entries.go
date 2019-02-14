@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"time"
-
-	"github.com/yosemite-open/go-adb/wire"
 )
 
 // DirEntry holds information about a directory entry on a device.
@@ -18,7 +16,7 @@ type DirEntry struct {
 
 // DirEntries iterates over directory entries.
 type DirEntries struct {
-	scanner wire.SyncScanner
+	scanner SyncScanner
 
 	currentEntry *DirEntry
 	err          error
@@ -73,7 +71,7 @@ func (entries *DirEntries) Close() error {
 	return entries.scanner.Close()
 }
 
-func readNextDirListEntry(s wire.SyncScanner) (entry *DirEntry, done bool, err error) {
+func readNextDirListEntry(s SyncScanner) (entry *DirEntry, done bool, err error) {
 	status, err := s.ReadStatus("dir-entry")
 	if err != nil {
 		return

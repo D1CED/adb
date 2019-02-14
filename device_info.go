@@ -4,43 +4,40 @@ import (
 	"bufio"
 	"strings"
 
-	"github.com/yosemite-open/go-adb/internal/errors"
+	"github.com/pkg/errors"
 )
 
 type DeviceInfo struct {
 	// Always set.
 	Serial string
-
 	// Product, device, and model are not set in the short form.
 	Product    string
 	Model      string
 	DeviceInfo string
-
 	// Only set for devices connected via USB.
-	Usb string
+	USB string
 }
 
-// IsUsb returns true if the device is connected via USB.
-func (d *DeviceInfo) IsUsb() bool {
-	return d.Usb != ""
+// IsUSB returns true if the device is connected via USB.
+func (d DeviceInfo) IsUSB() bool {
+	return d.USB != ""
 }
 
-func newDevice(serial string, attrs map[string]string) (*DeviceInfo, error) {
+func newDevice(serial string, attrs map[string]string) (DeviceInfo, error) {
 	if serial == "" {
-		return nil, errors.AssertionErrorf("device serial cannot be blank")
+		return DeviceInfo{}, errors.Wrap(AssertionError, "device serial cannot be blank")
 	}
-
-	return &DeviceInfo{
+	return DeviceInfo{
 		Serial:     serial,
 		Product:    attrs["product"],
 		Model:      attrs["model"],
 		DeviceInfo: attrs["device"],
-		Usb:        attrs["usb"],
+		USB:        attrs["usb"],
 	}, nil
 }
 
-func parseDeviceList(list string, lineParseFunc func(string) (*DeviceInfo, error)) ([]*DeviceInfo, error) {
-	devices := []*DeviceInfo{}
+func parseDeviceList(list string, lineParseFunc func(string) (DeviceInfo, error)) ([]DeviceInfo, error) {
+	devices := []DeviceInfo{}
 	scanner := bufio.NewScanner(strings.NewReader(list))
 
 	for scanner.Scan() {
@@ -54,20 +51,19 @@ func parseDeviceList(list string, lineParseFunc func(string) (*DeviceInfo, error
 	return devices, nil
 }
 
-func parseDeviceShort(line string) (*DeviceInfo, error) {
+func parseDeviceShort(line string) (DeviceInfo, error) {
 	fields := strings.Fields(line)
 	if len(fields) != 2 {
-		return nil, errors.Errorf(errors.ParseError,
+		return DeviceInfo{}, errors.Wrapf(ParseError,
 			"malformed device line, expected 2 fields but found %d", len(fields))
 	}
-
 	return newDevice(fields[0], map[string]string{})
 }
 
-func parseDeviceLong(line string) (*DeviceInfo, error) {
+func parseDeviceLong(line string) (DeviceInfo, error) {
 	fields := strings.Fields(line)
 	if len(fields) < 5 {
-		return nil, errors.Errorf(errors.ParseError,
+		return DeviceInfo{}, errors.Wrapf(ParseError,
 			"malformed device line, expected at least 5 fields but found %d", len(fields))
 	}
 
@@ -87,5 +83,8 @@ func parseDeviceAttributes(fields []string) map[string]string {
 // Parses a key:val pair and returns key, val.
 func parseKeyVal(pair string) (string, string) {
 	split := strings.Split(pair, ":")
+	if len(split) != 2 {
+		return "", ""
+	}
 	return split[0], split[1]
 }

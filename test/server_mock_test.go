@@ -10,9 +10,9 @@ import (
 
 // MockServer implements Server, Scanner, and Sender.
 type MockServer struct {
-	// Each time an operation is performed, if this slice is non-empty, the head element
-	// of this slice is returned and removed from the slice. If the head is nil, it is removed
-	// but not returned.
+	// Each time an operation is performed, if this slice is non-empty, the
+	// head element of this slice is returned and removed from the slice.
+	// If the head is nil, it is removed but not returned.
 	Errs []error
 
 	Status string

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	retryablehttp "github.com/hashicorp/go-retryablehttp"
+	"github.com/pkg/errors"
 )
 
 type Process struct {
@@ -246,7 +247,7 @@ func (c *Device) WriteToFile(path string, rd io.Reader, perms os.FileMode) (writ
 				return
 			}
 			finfo, er := c.Stat(path)
-			if er != nil && !HasErrCode(er, FileNoExistError) {
+			if er != nil && errors.Cause(er) == FileNoExistError {
 				err = er
 				return
 			}

@@ -3,27 +3,28 @@ package adb
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/yosemite-open/go-adb/internal/errors"
+	"github.com/pkg/errors"
 	"github.com/yosemite-open/go-adb/wire"
 )
 
-// MtimeOfClose should be passed to OpenWrite to set the file modification time to the time the Close
-// method is called.
+// MtimeOfClose should be passed to OpenWrite to set the file modification time
+// to the time the Close method is called.
 var MtimeOfClose = time.Time{}
 
 // Device communicates with a specific Android device.
 // To get an instance, call Device() on an Adb.
 type Device struct {
-	server     server
+	server     Server
 	descriptor DeviceDescriptor
 
 	// Used to get device info.
-	deviceListFunc func() ([]*DeviceInfo, error)
+	deviceListFunc func() ([]DeviceInfo, error)
 }
 
 func (c *Device) String() string {
@@ -49,11 +50,11 @@ func (c *Device) DevicePath() (string, error) {
 
 func (c *Device) State() (DeviceState, error) {
 	attr, err := c.getAttribute("get-state")
-	state, err := parseDeviceState(attr)
+	state := parseDeviceState(attr)
 	return state, wrapClientError(err, c, "State")
 }
 
-var (
+const (
 	FProtocolTcp        = "tcp"
 	FProtocolAbstract   = "localabstract"
 	FProtocolReserved   = "localreserved"
@@ -108,7 +109,7 @@ func (c *Device) ForwardList() (fs []ForwardPair, err error) {
 		var local, remote ForwardSpec
 		var serial = fields[i*3]
 		// skip other device serial forwards
-		if c.descriptor.descriptorType == DeviceSerial && c.descriptor.serial != serial {
+		if c.descriptor == AnyDeviceSerial(serial) {
 			continue
 		}
 		if err = local.parseString(fields[i*3+1]); err != nil {
@@ -163,18 +164,18 @@ func (c *Device) ForwardToFreePort(remote ForwardSpec) (port int, err error) {
 	return
 }
 
-func (c *Device) DeviceInfo() (*DeviceInfo, error) {
+func (c *Device) DeviceInfo() (DeviceInfo, error) {
 	// Adb doesn't actually provide a way to get this for an individual device,
 	// so we have to just list devices and find ourselves.
 
 	serial, err := c.Serial()
 	if err != nil {
-		return nil, wrapClientError(err, c, "GetDeviceInfo(GetSerial)")
+		return DeviceInfo{}, wrapClientError(err, c, "GetDeviceInfo(GetSerial)")
 	}
 
 	devices, err := c.deviceListFunc()
 	if err != nil {
-		return nil, wrapClientError(err, c, "DeviceInfo(ListDevices)")
+		return DeviceInfo{}, wrapClientError(err, c, "DeviceInfo(ListDevices)")
 	}
 
 	for _, deviceInfo := range devices {
@@ -183,8 +184,8 @@ func (c *Device) DeviceInfo() (*DeviceInfo, error) {
 		}
 	}
 
-	err = errors.Errorf(errors.DeviceNotFound, "device list doesn't contain serial %s", serial)
-	return nil, wrapClientError(err, c, "DeviceInfo")
+	err = errors.Wrapf(DeviceNotFound, "device list doesn't contain serial %s", serial)
+	return DeviceInfo{}, wrapClientError(err, c, "DeviceInfo")
 }
 
 /*
@@ -211,7 +212,7 @@ func (c *Device) RunCommand(cmd string, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := conn.ReadUntilEof()
+	resp, err := ioutil.ReadAll(conn)
 	if err != nil {
 		return "", wrapClientError(err, c, "RunCommand")
 	}
@@ -219,7 +220,7 @@ func (c *Device) RunCommand(cmd string, args ...string) (string, error) {
 	return outStr, nil
 }
 
-func (c *Device) OpenCommand(cmd string, args ...string) (conn *wire.Conn, err error) {
+func (c *Device) OpenCommand(cmd string, args ...string) (conn Conn, err error) {
 	cmd, err = prepareCommandLine(cmd, args...)
 	if err != nil {
 		return nil, wrapClientError(err, c, "RunCommand")
@@ -264,7 +265,7 @@ func (c *Device) Remount() (string, error) {
 	}
 	defer conn.Close()
 
-	resp, err := conn.RoundTripSingleResponse([]byte("remount"))
+	resp, err := roundTripSingleResponseConn(conn, []byte("remount"))
 	return string(resp), wrapClientError(err, c, "Remount")
 }
 
@@ -273,7 +274,6 @@ func (c *Device) ListDirEntries(path string) (*DirEntries, error) {
 	if err != nil {
 		return nil, wrapClientError(err, c, "ListDirEntries(%s)", path)
 	}
-
 	entries, err := listDirEntries(conn, path)
 	return entries, wrapClientError(err, c, "ListDirEntries(%s)", path)
 }
@@ -331,28 +331,28 @@ func (c *Device) getSyncConn() (*wire.SyncConn, error) {
 	}
 
 	// Switch the connection to sync mode.
-	if err := wire.SendMessageString(conn, "sync:"); err != nil {
+	if err = conn.SendMessage([]byte("sync:")); err != nil {
 		return nil, err
 	}
-	if _, err := conn.ReadStatus("sync"); err != nil {
+	if _, err = conn.ReadStatus("sync"); err != nil {
 		return nil, err
 	}
 
-	return conn.NewSyncConn(), nil
+	return &wire.SyncConn{conn, conn}, nil
 }
 
 // dialDevice switches the connection to communicate directly with the device
 // by requesting the transport defined by the DeviceDescriptor.
-func (c *Device) dialDevice() (*wire.Conn, error) {
+func (c *Device) dialDevice() (Conn, error) {
 	conn, err := c.server.Dial()
 	if err != nil {
 		return nil, err
 	}
 
 	req := fmt.Sprintf("host:%s", c.descriptor.getTransportDescriptor())
-	if err = wire.SendMessageString(conn, req); err != nil {
+	if err = conn.SendMessage([]byte(req)); err != nil {
 		conn.Close()
-		return nil, errors.WrapErrf(err, "error connecting to device '%s'", c.descriptor)
+		return nil, errors.Wrapf(err, "error connecting to device '%s'", c.descriptor)
 	}
 
 	if _, err = conn.ReadStatus(req); err != nil {
@@ -367,12 +367,12 @@ func (c *Device) dialDevice() (*wire.Conn, error) {
 // arguments if required, and joins them into a valid adb command string.
 func prepareCommandLine(cmd string, args ...string) (string, error) {
 	if isBlank(cmd) {
-		return "", errors.AssertionErrorf("command cannot be empty")
+		return "", errors.Wrap(AssertionError, "command cannot be empty")
 	}
 
 	for i, arg := range args {
 		if strings.ContainsRune(arg, '"') {
-			return "", errors.Errorf(errors.ParseError, "arg at index %d contains an invalid double quote: %s", i, arg)
+			return "", errors.Wrapf(ParseError, "arg at index %d contains an invalid double quote: %s", i, arg)
 		}
 		if containsWhitespace(arg) {
 			args[i] = fmt.Sprintf("\"%s\"", arg)

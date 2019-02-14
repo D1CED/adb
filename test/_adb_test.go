@@ -12,7 +12,7 @@ func TestGetServerVersion(t *testing.T) {
 		Status:   wire.StatusSuccess,
 		Messages: []string{"000a"},
 	}
-	client := &Adb{s}
+	client := &ADB{s}
 
 	v, err := client.ServerVersion()
 	assert.Equal(t, "host:version", s.Requests[0])

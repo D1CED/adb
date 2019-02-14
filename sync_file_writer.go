@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/yosemite-open/go-adb/internal/errors"
+	"github.com/pkg/errors"
 	"github.com/yosemite-open/go-adb/wire"
 )
 

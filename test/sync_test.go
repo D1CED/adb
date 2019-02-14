@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
-	"github.com/yosemite-open/go-adb/internal/errors"
 )
 
 var (
@@ -19,7 +19,7 @@ var (
 
 func TestSyncSendOctetString(t *testing.T) {
 	var buf bytes.Buffer
-	s := NewSyncSender(&buf)
+	s := SyncSender{&buf}
 	err := s.SendOctetString("helo")
 	assert.NoError(t, err)
 	assert.Equal(t, "helo", buf.String())
@@ -27,13 +27,13 @@ func TestSyncSendOctetString(t *testing.T) {
 
 func TestSyncSendOctetStringTooLong(t *testing.T) {
 	var buf bytes.Buffer
-	s := NewSyncSender(&buf)
+	s := SyncSender{&buf}
 	err := s.SendOctetString("hello")
 	assert.Equal(t, errors.AssertionErrorf("octet string must be exactly 4 bytes: 'hello'"), err)
 }
 
 func TestSyncReadTime(t *testing.T) {
-	s := NewSyncScanner(bytes.NewReader(someTimeEncoded))
+	s := SyncScanner{bytes.NewReader(someTimeEncoded)}
 	decoded, err := s.ReadTime()
 	assert.NoError(t, err)
 	assert.Equal(t, someTime, decoded)
@@ -41,35 +41,35 @@ func TestSyncReadTime(t *testing.T) {
 
 func TestSyncSendTime(t *testing.T) {
 	var buf bytes.Buffer
-	s := NewSyncSender(&buf)
+	s := SyncSender{&buf}
 	err := s.SendTime(someTime)
 	assert.NoError(t, err)
 	assert.Equal(t, someTimeEncoded, buf.Bytes())
 }
 
 func TestSyncReadString(t *testing.T) {
-	s := NewSyncScanner(strings.NewReader("\005\000\000\000hello"))
+	s := SyncScanner{strings.NewReader("\005\000\000\000hello")}
 	str, err := s.ReadString()
 	assert.NoError(t, err)
 	assert.Equal(t, "hello", str)
 }
 
 func TestSyncReadStringTooShort(t *testing.T) {
-	s := NewSyncScanner(strings.NewReader("\005\000\000\000h"))
+	s := SyncScanner{strings.NewReader("\005\000\000\000h")}
 	_, err := s.ReadString()
 	assert.Equal(t, errIncompleteMessage("bytes", 1, 5), err)
 }
 
 func TestSyncSendBytes(t *testing.T) {
 	var buf bytes.Buffer
-	s := NewSyncSender(&buf)
+	s := SyncSender{&buf}
 	err := s.SendBytes([]byte("hello"))
 	assert.NoError(t, err)
 	assert.Equal(t, "\005\000\000\000hello", buf.String())
 }
 
 func TestSyncReadBytes(t *testing.T) {
-	s := NewSyncScanner(strings.NewReader("\005\000\000\000helloworld"))
+	s := SyncScanner{strings.NewReader("\005\000\000\000helloworld")}
 
 	reader, err := s.ReadBytes()
 	assert.NoError(t, err)

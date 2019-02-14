@@ -1,56 +1,36 @@
 package wire
 
-import (
-	"testing"
+import "testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/yosemite-open/go-adb/internal/errors"
-)
-
-func TestAdbServerError_NoRequest(t *testing.T) {
-	err := adbServerError("", "fail")
-	assert.Equal(t, errors.Err{
-		Code:    errors.AdbError,
-		Message: "server error: fail",
-		Details: ErrorResponseDetails{
-			Request:   "",
-			ServerMsg: "fail",
-		},
-	}, *(err.(*errors.Err)))
-}
-
-func TestAdbServerError_WithRequest(t *testing.T) {
-	err := adbServerError("polite", "fail")
-	assert.Equal(t, errors.Err{
-		Code:    errors.AdbError,
-		Message: "server error for polite request: fail",
-		Details: ErrorResponseDetails{
-			Request:   "polite",
-			ServerMsg: "fail",
-		},
-	}, *(err.(*errors.Err)))
-}
-
-func TestAdbServerError_DeviceNotFound(t *testing.T) {
-	err := adbServerError("", "device not found")
-	assert.Equal(t, errors.Err{
-		Code:    errors.DeviceNotFound,
-		Message: "server error: device not found",
-		Details: ErrorResponseDetails{
-			Request:   "",
-			ServerMsg: "device not found",
-		},
-	}, *(err.(*errors.Err)))
-}
-
-func TestAdbServerError_DeviceSerialNotFound(t *testing.T) {
-	err := adbServerError("", "device 'LGV4801c74eccd' not found")
-	assert.Equal(t, errors.Err{
-		Code:    errors.DeviceNotFound,
-		Message: "server error: device 'LGV4801c74eccd' not found",
-		Details: ErrorResponseDetails{
-			Request:   "",
-			ServerMsg: "device 'LGV4801c74eccd' not found",
-		},
-	}, *(err.(*errors.Err)))
+func TestTetraToUint32(t *testing.T) {
+	tests := []struct {
+		inp  [4]byte
+		want uint32
+	}{{
+		[4]byte{0, 0, 0, 0}, 0,
+	}, {
+		[4]byte{1, 0, 0, 0}, 1,
+	}, {
+		[4]byte{2, 0, 0, 0}, 2,
+	}, {
+		[4]byte{100, 0, 0, 0}, 100,
+	}, {
+		[4]byte{255, 0, 0, 0}, 255,
+	}, {
+		[4]byte{0, 1, 0, 0}, 1 << 8,
+	}, {
+		[4]byte{0, 0, 0, 1}, 1 << 24,
+	}, {
+		[4]byte{255, 255, 255, 255}, (1 << 32) - 1,
+	}}
+	for _, test := range tests {
+		got := tetraToUint32(test.inp)
+		if test.want != got {
+			t.Errorf("for %v, want %d, got %d", test.inp, test.want, got)
+		}
+		back := uint32ToTetra(got)
+		if test.inp != back {
+			t.Errorf("want %v, got %v", test.inp, back)
+		}
+	}
 }

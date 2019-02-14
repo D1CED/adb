@@ -1,7 +1,5 @@
 package adb
 
-import "github.com/yosemite-open/go-adb/internal/errors"
-
 // DeviceState represents one of the 3 possible states adb will report devices.
 // A device can be communicated with when it's in StateOnline.
 // A USB device will make the following state transitions:
@@ -18,17 +16,16 @@ const (
 	StateOnline
 )
 
-var deviceStateStrings = map[string]DeviceState{
-	"":             StateDisconnected,
-	"offline":      StateOffline,
-	"device":       StateOnline,
-	"unauthorized": StateUnauthorized,
-}
-
-func parseDeviceState(str string) (DeviceState, error) {
-	state, ok := deviceStateStrings[str]
-	if !ok {
-		return StateInvalid, errors.Errorf(errors.ParseError, "invalid device state: %q", state)
+func parseDeviceState(str string) DeviceState {
+	var deviceStateStrings = map[string]DeviceState{
+		"":             StateDisconnected,
+		"offline":      StateOffline,
+		"device":       StateOnline,
+		"unauthorized": StateUnauthorized,
 	}
-	return state, nil
+	if state, ok := deviceStateStrings[str]; ok {
+		return state
+	} else {
+		return StateInvalid
+	}
 }

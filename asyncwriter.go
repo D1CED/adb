@@ -4,6 +4,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 type AsyncWriter struct {
@@ -86,7 +88,7 @@ func (a *AsyncWriter) darinProgress() {
 		select {
 		case <-t.C:
 			finfo, err := a.dev.Stat(a.dstPath)
-			if err != nil && !HasErrCode(err, FileNoExistError) {
+			if err != nil && errors.Cause(err) != FileNoExistError {
 				a.err = err
 				return
 			}

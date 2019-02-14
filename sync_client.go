@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/yosemite-open/go-adb/internal/errors"
+	"github.com/pkg/errors"
 	"github.com/yosemite-open/go-adb/wire"
 )
 
@@ -24,7 +24,7 @@ func stat(conn *wire.SyncConn, path string) (*DirEntry, error) {
 		return nil, err
 	}
 	if id != "STAT" {
-		return nil, errors.Errorf(errors.AssertionError, "expected stat ID 'STAT', but got '%s'", id)
+		return nil, errors.Errorf("expected stat ID 'STAT', but got '%s'", id)
 	}
 
 	return readStat(conn)
@@ -68,7 +68,7 @@ func sendFile(conn *wire.SyncConn, path string, mode os.FileMode, mtime time.Tim
 	return newSyncFileWriter(conn, mtime), nil
 }
 
-func readStat(s wire.SyncScanner) (entry *DirEntry, err error) {
+func readStat(s SyncScanner) (entry *DirEntry, err error) {
 	mode, err := s.ReadFileMode()
 	if err != nil {
 		err = errors.WrapErrf(err, "error reading file mode: %v", err)
@@ -90,11 +90,9 @@ func readStat(s wire.SyncScanner) (entry *DirEntry, err error) {
 	if mode == os.FileMode(0) && size == 0 && mtime == zeroTime {
 		return nil, errors.Errorf(errors.FileNoExistError, "file doesn't exist")
 	}
-
 	entry = &DirEntry{
 		Mode:       mode,
 		Size:       size,
 		ModifiedAt: mtime,
 	}
-	return
 }

@@ -3,14 +3,14 @@ package adb
 import (
 	"io"
 
-	"github.com/yosemite-open/go-adb/internal/errors"
+	"github.com/pkg/errors"
 	"github.com/yosemite-open/go-adb/wire"
 )
 
 // syncFileReader wraps a SyncConn that has requested to receive a file.
 type syncFileReader struct {
 	// Reader used to read data from the adb connection.
-	scanner wire.SyncScanner
+	scanner SyncScanner
 
 	// Reader for the current chunk only.
 	chunkReader io.Reader
@@ -21,7 +21,7 @@ type syncFileReader struct {
 
 var _ io.ReadCloser = &syncFileReader{}
 
-func newSyncFileReader(s wire.SyncScanner) (r io.ReadCloser, err error) {
+func newSyncFileReader(s SyncScanner) (r io.ReadCloser, err error) {
 	r = &syncFileReader{
 		scanner: s,
 	}
@@ -81,7 +81,7 @@ func (r *syncFileReader) Close() error {
 
 // readNextChunk creates an io.LimitedReader for the next chunk of data,
 // and returns io.EOF if the last chunk has been read.
-func readNextChunk(r wire.SyncScanner) (io.Reader, error) {
+func readNextChunk(r SyncScanner) (io.Reader, error) {
 	status, err := r.ReadStatus("read-chunk")
 	if err != nil {
 		if wire.IsAdbServerErrorMatching(err, readFileNotFoundPredicate) {

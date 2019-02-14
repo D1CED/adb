@@ -23,7 +23,7 @@ func TestWriteEmptyMessage(t *testing.T) {
 
 func NewTestSender() (Sender, *TestWriter) {
 	w := new(TestWriter)
-	return NewSender(w), w
+	return Sender{w}, w
 }
 
 // TestWriter is a wrapper around a bytes.Buffer that implements io.Closer.
