@@ -3,14 +3,12 @@ package adb
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/yosemite-open/go-adb/wire"
 )
 
 // MtimeOfClose should be passed to OpenWrite to set the file modification time
@@ -20,38 +18,77 @@ var MtimeOfClose = time.Time{}
 // Device communicates with a specific Android device.
 // To get an instance, call Device() on an Adb.
 type Device struct {
-	server     Server
+	server     *Server
 	descriptor DeviceDescriptor
-
-	// Used to get device info.
-	deviceListFunc func() ([]DeviceInfo, error)
 }
 
-func (c *Device) String() string {
-	return c.descriptor.String()
+// openConn switches the connection to communicate directly with the device
+// by requesting the transport defined by the DeviceDescriptor.
+func (d *Device) openConn() error {
+	// or maybe close and reopen?
+	if d.server.conn != nil {
+		return nil
+	}
+	err := d.server.openConn()
+	if err != nil {
+		return err
+	}
+	msg := fmt.Sprintf("host:%s", d.descriptor.transportDescriptor())
+	_, err = sendMessage(d.server.conn, msg)
+	if err != nil {
+		d.server.Close()
+		return errors.Wrapf(err, "error connecting to device '%s'", d.descriptor)
+	}
+	if err = wantStatus("OKAY", d.server.conn); err != nil {
+		d.server.Close()
+		return err
+	}
+	return nil
+}
+
+func (d *Device) openSyncConn() error {
+	if d.server.conn == nil {
+		err := d.server.openConn()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Switch the connection to sync mode.
+	if _, err := sendMessage(d.server.conn, "sync:"); err != nil {
+		return err
+	}
+	if err := wantStatus("OKAY", d.server.conn); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *Device) String() string {
+	return d.descriptor.String()
 }
 
 // get-product is documented, but not implemented, in the server.
 // TODO(z): Make product exported if get-product is ever implemented in adb.
-func (c *Device) product() (string, error) {
-	attr, err := c.getAttribute("get-product")
-	return attr, wrapClientError(err, c, "Product")
+func (d *Device) product() (string, error) {
+	attr, err := d.getAttribute("get-product")
+	return attr, errors.Wrap(err, "Product")
 }
 
-func (c *Device) Serial() (string, error) {
-	attr, err := c.getAttribute("get-serialno")
-	return attr, wrapClientError(err, c, "Serial")
+func (d *Device) Serial() (string, error) {
+	attr, err := d.getAttribute("get-serialno")
+	return attr, errors.Wrap(err, "Serial")
 }
 
-func (c *Device) DevicePath() (string, error) {
-	attr, err := c.getAttribute("get-devpath")
-	return attr, wrapClientError(err, c, "DevicePath")
+func (d *Device) DevicePath() (string, error) {
+	attr, err := d.getAttribute("get-devpath")
+	return attr, errors.Wrap(err, "DevicePath")
 }
 
-func (c *Device) State() (DeviceState, error) {
-	attr, err := c.getAttribute("get-state")
+func (d *Device) State() (DeviceState, error) {
+	attr, err := d.getAttribute("get-state")
 	state := parseDeviceState(attr)
-	return state, wrapClientError(err, c, "State")
+	return state, errors.Wrap(err, "State")
 }
 
 const (
@@ -95,8 +132,8 @@ type ForwardPair struct {
 
 // ForwardList returns list with struct ForwardPair
 // If no device serial specified all devices's forward list will returned
-func (c *Device) ForwardList() (fs []ForwardPair, err error) {
-	attr, err := c.getAttribute("list-forward")
+func (d *Device) ForwardList() (fs []ForwardPair, err error) {
+	attr, err := d.getAttribute("list-forward")
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +146,7 @@ func (c *Device) ForwardList() (fs []ForwardPair, err error) {
 		var local, remote ForwardSpec
 		var serial = fields[i*3]
 		// skip other device serial forwards
-		if c.descriptor == AnyDeviceSerial(serial) {
+		if d.descriptor == AnyDeviceSerial(serial) {
 			continue
 		}
 		if err = local.parseString(fields[i*3+1]); err != nil {
@@ -124,30 +161,30 @@ func (c *Device) ForwardList() (fs []ForwardPair, err error) {
 }
 
 // ForwardRemove specified forward
-func (c *Device) ForwardRemove(local ForwardSpec) error {
-	err := roundTripSingleNoResponse(c.server,
-		fmt.Sprintf("%s:killforward:%v", c.descriptor.getHostPrefix(), local))
-	return wrapClientError(err, c, "ForwardRemove")
+func (d *Device) ForwardRemove(local ForwardSpec) error {
+	err := roundTripSingleNoResponse(d.server,
+		fmt.Sprintf("%s:killforward:%v", d.descriptor.hostPrefix(), local))
+	return errors.Wrap(err, "ForwardRemove")
 }
 
 // ForwardRemoveAll cancel all exists forwards
-func (c *Device) ForwardRemoveAll() error {
-	err := roundTripSingleNoResponse(c.server,
-		fmt.Sprintf("%s:killforward-all", c.descriptor.getHostPrefix()))
-	return wrapClientError(err, c, "ForwardRemoveAll")
+func (d *Device) ForwardRemoveAll() error {
+	err := roundTripSingleNoResponse(d.server,
+		fmt.Sprintf("%s:killforward-all", d.descriptor.hostPrefix()))
+	return errors.Wrap(err, "ForwardRemoveAll")
 }
 
 // Forward remote connection to local
-func (c *Device) Forward(local, remote ForwardSpec) error {
-	err := roundTripSingleNoResponse(c.server,
-		fmt.Sprintf("%s:forward:%v;%v", c.descriptor.getHostPrefix(), local, remote))
-	return wrapClientError(err, c, "Forward")
+func (d *Device) Forward(local, remote ForwardSpec) error {
+	err := roundTripSingleNoResponse(d.server,
+		fmt.Sprintf("%s:forward:%v;%v", d.descriptor.hostPrefix(), local, remote))
+	return errors.Wrap(err, "Forward")
 }
 
 // ForwardToFreePort return random generated port
 // If forward already exists, just return current forworded port
-func (c *Device) ForwardToFreePort(remote ForwardSpec) (port int, err error) {
-	fws, err := c.ForwardList()
+func (d *Device) ForwardToFreePort(remote ForwardSpec) (port int, err error) {
+	fws, err := d.ForwardList()
 	if err != nil {
 		return
 	}
@@ -156,26 +193,26 @@ func (c *Device) ForwardToFreePort(remote ForwardSpec) (port int, err error) {
 			return fw.Local.Port()
 		}
 	}
-	port, err = getFreePort()
+	port = getFreePort()
 	if err != nil {
 		return
 	}
-	err = c.Forward(ForwardSpec{FProtocolTcp, strconv.Itoa(port)}, remote)
+	err = d.Forward(ForwardSpec{FProtocolTcp, strconv.Itoa(port)}, remote)
 	return
 }
 
-func (c *Device) DeviceInfo() (DeviceInfo, error) {
-	// Adb doesn't actually provide a way to get this for an individual device,
+func (d *Device) DeviceInfo() (DeviceInfo, error) {
+	// adb doesn't actually provide a way to get this for an individual device,
 	// so we have to just list devices and find ourselves.
 
-	serial, err := c.Serial()
+	serial, err := d.Serial()
 	if err != nil {
-		return DeviceInfo{}, wrapClientError(err, c, "GetDeviceInfo(GetSerial)")
+		return DeviceInfo{}, errors.Wrap(err, "GetDeviceInfo(GetSerial)")
 	}
 
-	devices, err := c.deviceListFunc()
+	devices, err := d.server.ListDevices()
 	if err != nil {
-		return DeviceInfo{}, wrapClientError(err, c, "DeviceInfo(ListDevices)")
+		return DeviceInfo{}, errors.Wrap(err, "DeviceInfo(ListDevices)")
 	}
 
 	for _, deviceInfo := range devices {
@@ -184,8 +221,8 @@ func (c *Device) DeviceInfo() (DeviceInfo, error) {
 		}
 	}
 
-	err = errors.Wrapf(DeviceNotFound, "device list doesn't contain serial %s", serial)
-	return DeviceInfo{}, wrapClientError(err, c, "DeviceInfo")
+	err = errors.Wrapf(ErrDeviceNotFound, "device list doesn't contain serial %s", serial)
+	return DeviceInfo{}, errors.Wrap(err, "DeviceInfo")
 }
 
 /*
@@ -207,46 +244,39 @@ contain double quotes.
 Because the adb shell converts all "\n" into "\r\n",
 so here we convert it back (maybe not good for binary output)
 */
-func (c *Device) RunCommand(cmd string, args ...string) (string, error) {
-	conn, err := c.OpenCommand(cmd, args...)
+func (d *Device) RunCommand(cmd string, args ...string) (string, error) {
+	err := d.OpenCommand(cmd, args...)
 	if err != nil {
 		return "", err
 	}
-	resp, err := ioutil.ReadAll(conn)
-	if err != nil {
-		return "", wrapClientError(err, c, "RunCommand")
-	}
-	outStr := strings.Replace(string(resp), "\r\n", "\n", -1)
-	return outStr, nil
+	b := &strings.Builder{}
+	_, err = io.Copy(b, d.server.conn)
+	return b.String(), errors.WithMessage(err, "RunCommand")
 }
 
-func (c *Device) OpenCommand(cmd string, args ...string) (conn Conn, err error) {
-	cmd, err = prepareCommandLine(cmd, args...)
+// OpenCommand the connection to accept commands.
+func (d *Device) OpenCommand(cmd string, args ...string) error {
+	cmd, err := prepareCommandLine(cmd, args...)
 	if err != nil {
-		return nil, wrapClientError(err, c, "RunCommand")
+		return err
 	}
-	conn, err = c.dialDevice()
+	err = d.openConn()
 	if err != nil {
-		return nil, wrapClientError(err, c, "RunCommand")
+		return err
 	}
-	defer func() {
-		if err != nil && conn != nil {
-			conn.Close()
-		}
-	}()
 
 	req := fmt.Sprintf("shell:%s", cmd)
 
 	// Shell responses are special, they don't include a length header.
 	// We read until the stream is closed.
 	// So, we can't use conn.RoundTripSingleResponse.
-	if err = conn.SendMessage([]byte(req)); err != nil {
-		return nil, wrapClientError(err, c, "Command")
+	if _, err = sendMessage(d.server.conn, req); err != nil {
+		return err
 	}
-	if _, err = conn.ReadStatus(req); err != nil {
-		return nil, wrapClientError(err, c, "Command")
+	if err = wantStatus("OKAY", d.server.conn); err != nil {
+		return err
 	}
-	return conn, nil
+	return nil
 }
 
 /*
@@ -258,121 +288,79 @@ Remount, from the official adb command’s docs:
 	that.
 Source: https://android.googlesource.com/platform/system/core/+/master/adb/SERVICES.TXT
 */
-func (c *Device) Remount() (string, error) {
-	conn, err := c.dialDevice()
-	if err != nil {
-		return "", wrapClientError(err, c, "Remount")
-	}
-	defer conn.Close()
-
-	resp, err := roundTripSingleResponseConn(conn, []byte("remount"))
-	return string(resp), wrapClientError(err, c, "Remount")
+func (d *Device) Remount() (string, error) {
+	b := &strings.Builder{}
+	_, err := d.server.requestResponse("remount", b)
+	return b.String(), errors.WithMessage(err, "Remount")
 }
 
-func (c *Device) ListDirEntries(path string) (*DirEntries, error) {
-	conn, err := c.getSyncConn()
+func (d *Device) ListDirEntries(path string) (*DirEntries, error) {
+	err := d.openSyncConn()
 	if err != nil {
-		return nil, wrapClientError(err, c, "ListDirEntries(%s)", path)
+		return nil, errors.Wrapf(err, "ListDirEntries(%s)", path)
 	}
-	entries, err := listDirEntries(conn, path)
-	return entries, wrapClientError(err, c, "ListDirEntries(%s)", path)
+	defer d.server.Close()
+
+	entries, err := listDirEntries(d.server.conn, path)
+	return entries, errors.Wrapf(err, "ListDirEntries(%s)", path)
 }
 
-func (c *Device) Stat(path string) (*DirEntry, error) {
-	conn, err := c.getSyncConn()
+func (d *Device) Stat(path string) (*DirEntry, error) {
+	err := d.openSyncConn()
 	if err != nil {
-		return nil, wrapClientError(err, c, "Stat(%s)", path)
+		return nil, errors.Wrapf(err, "Stat(%s)", path)
 	}
-	defer conn.Close()
+	defer d.server.Close()
 
-	entry, err := stat(conn, path)
-	return entry, wrapClientError(err, c, "Stat(%s)", path)
+	entry, err := stat(d.server.conn, path)
+	return entry, errors.Wrapf(err, "Stat(%s)", path)
 }
 
-func (c *Device) OpenRead(path string) (io.ReadCloser, error) {
-	conn, err := c.getSyncConn()
+func (d *Device) OpenRead(path string) (io.ReadCloser, error) {
+	err := d.openSyncConn()
 	if err != nil {
-		return nil, wrapClientError(err, c, "OpenRead(%s)", path)
+		return nil, errors.Wrapf(err, "OpenRead(%s)", path)
 	}
 
-	reader, err := receiveFile(conn, path)
-	return reader, wrapClientError(err, c, "OpenRead(%s)", path)
+	reader, err := receiveFile(d.server.conn, path)
+	return reader, errors.Wrapf(err, "OpenRead(%s)", path)
 }
 
 // OpenWrite opens the file at path on the device, creating it with the permissions specified
 // by perms if necessary, and returns a writer that writes to the file.
 // The files modification time will be set to mtime when the WriterCloser is closed. The zero value
 // is TimeOfClose, which will use the time the Close method is called as the modification time.
-func (c *Device) OpenWrite(path string, perms os.FileMode, mtime time.Time) (io.WriteCloser, error) {
-	conn, err := c.getSyncConn()
+func (d *Device) OpenWrite(path string, perms os.FileMode, mtime time.Time) (io.WriteCloser, error) {
+	err := d.openSyncConn()
 	if err != nil {
-		return nil, wrapClientError(err, c, "OpenWrite(%s)", path)
+		return nil, errors.Wrapf(err, "OpenWrite(%s)", path)
 	}
 
-	writer, err := sendFile(conn, path, perms, mtime)
-	return writer, wrapClientError(err, c, "OpenWrite(%s)", path)
+	writer, err := sendFile(d.server.conn, path, perms, mtime)
+	return writer, errors.Wrapf(err, "OpenWrite(%s)", path)
 }
 
 // getAttribute returns the first message returned by the server by running
 // <host-prefix>:<attr>, where host-prefix is determined from the DeviceDescriptor.
 func (c *Device) getAttribute(attr string) (string, error) {
 	resp, err := roundTripSingleResponse(c.server,
-		fmt.Sprintf("%s:%s", c.descriptor.getHostPrefix(), attr))
+		fmt.Sprintf("%s:%s", c.descriptor.hostPrefix(), attr))
 	if err != nil {
 		return "", err
 	}
 	return string(resp), nil
 }
 
-func (c *Device) getSyncConn() (*wire.SyncConn, error) {
-	conn, err := c.dialDevice()
-	if err != nil {
-		return nil, err
-	}
-
-	// Switch the connection to sync mode.
-	if err = conn.SendMessage([]byte("sync:")); err != nil {
-		return nil, err
-	}
-	if _, err = conn.ReadStatus("sync"); err != nil {
-		return nil, err
-	}
-
-	return &wire.SyncConn{conn, conn}, nil
-}
-
-// dialDevice switches the connection to communicate directly with the device
-// by requesting the transport defined by the DeviceDescriptor.
-func (c *Device) dialDevice() (Conn, error) {
-	conn, err := c.server.Dial()
-	if err != nil {
-		return nil, err
-	}
-
-	req := fmt.Sprintf("host:%s", c.descriptor.getTransportDescriptor())
-	if err = conn.SendMessage([]byte(req)); err != nil {
-		conn.Close()
-		return nil, errors.Wrapf(err, "error connecting to device '%s'", c.descriptor)
-	}
-
-	if _, err = conn.ReadStatus(req); err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	return conn, nil
-}
-
 // prepareCommandLine validates the command and argument strings, quotes
 // arguments if required, and joins them into a valid adb command string.
 func prepareCommandLine(cmd string, args ...string) (string, error) {
 	if isBlank(cmd) {
-		return "", errors.Wrap(AssertionError, "command cannot be empty")
+		return "", errors.Wrap(ErrAssertionViolation, "command cannot be empty")
 	}
 
 	for i, arg := range args {
 		if strings.ContainsRune(arg, '"') {
-			return "", errors.Wrapf(ParseError, "arg at index %d contains an invalid double quote: %s", i, arg)
+			return "", errors.Wrapf(ErrParsing, "arg at index %d contains an invalid double quote: %s", i, arg)
 		}
 		if containsWhitespace(arg) {
 			args[i] = fmt.Sprintf("\"%s\"", arg)

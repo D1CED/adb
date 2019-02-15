@@ -6,46 +6,56 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/yosemite-open/go-adb/wire"
+)
+
+const (
+	StatusSuccess  string = "OKAY"
+	StatusFailure         = "FAIL"
+	StatusSyncData        = "DATA"
+	StatusSyncDone        = "DONE"
+	StatusNone            = ""
+
+	// Chunks cannot be longer than 64k.
+	SyncMaxChunkSize = 64 * 1024
 )
 
 var zeroTime = time.Unix(0, 0).UTC()
 
-func stat(conn *wire.SyncConn, path string) (*DirEntry, error) {
-	if err := conn.SendOctetString("STAT"); err != nil {
+func stat(conn io.ReadWriter, path string) (*DirEntry, error) {
+	if _, err := conn.Write([]byte("STAT")); err != nil {
 		return nil, err
 	}
-	if err := conn.SendBytes([]byte(path)); err != nil {
+	if _, err := sendMessage(conn, path); err != nil {
 		return nil, err
 	}
 
-	id, err := conn.ReadStatus("stat")
+	id, err := readTetra(conn)
 	if err != nil {
 		return nil, err
 	}
-	if id != "STAT" {
-		return nil, errors.Errorf("expected stat ID 'STAT', but got '%s'", id)
+	status := tetraToString(id)
+	if status != "STAT" {
+		return nil, errors.Errorf("expected stat ID 'STAT', but got '%s'", status)
 	}
 
 	return readStat(conn)
 }
 
-func listDirEntries(conn *wire.SyncConn, path string) (entries *DirEntries, err error) {
-	if err = conn.SendOctetString("LIST"); err != nil {
-		return
+func listDirEntries(conn io.ReadWriteCloser, path string) (*DirEntries, error) {
+	if _, err := conn.Write([]byte("LIST")); err != nil {
+		return nil, err
 	}
-	if err = conn.SendBytes([]byte(path)); err != nil {
-		return
+	if _, err := sendMessage(conn, path); err != nil {
+		return nil, err
 	}
-
 	return &DirEntries{scanner: conn}, nil
 }
 
-func receiveFile(conn *wire.SyncConn, path string) (io.ReadCloser, error) {
-	if err := conn.SendOctetString("RECV"); err != nil {
+func receiveFile(conn io.ReadWriteCloser, path string) (io.ReadCloser, error) {
+	if _, err := conn.Write([]byte("RECV")); err != nil {
 		return nil, err
 	}
-	if err := conn.SendBytes([]byte(path)); err != nil {
+	if _, err := sendMessage(conn, path); err != nil {
 		return nil, err
 	}
 	return newSyncFileReader(conn)
@@ -55,44 +65,44 @@ func receiveFile(conn *wire.SyncConn, path string) (io.ReadCloser, error) {
 // The file will be created with permissions specified by mode.
 // The file's modified time will be set to mtime, unless mtime is 0, in which case the time the writer is
 // closed will be used.
-func sendFile(conn *wire.SyncConn, path string, mode os.FileMode, mtime time.Time) (io.WriteCloser, error) {
-	if err := conn.SendOctetString("SEND"); err != nil {
+func sendFile(conn io.ReadWriteCloser, path string, mode os.FileMode, mtime time.Time) (io.WriteCloser, error) {
+	if _, err := conn.Write([]byte("SEND")); err != nil {
 		return nil, err
 	}
-
 	pathAndMode := encodePathAndMode(path, mode)
-	if err := conn.SendBytes(pathAndMode); err != nil {
+	if _, err := sendMessage(conn, string(pathAndMode)); err != nil {
 		return nil, err
 	}
-
 	return newSyncFileWriter(conn, mtime), nil
 }
 
-func readStat(s SyncScanner) (entry *DirEntry, err error) {
-	mode, err := s.ReadFileMode()
+func readStat(s io.Reader) (*DirEntry, error) {
+	t, err := readTetra(s)
 	if err != nil {
-		err = errors.WrapErrf(err, "error reading file mode: %v", err)
-		return
+		return nil, errors.Wrap(err, "error reading file mode")
 	}
-	size, err := s.ReadInt32()
+	mode := tetraToFileMode(t)
+
+	t, err = readTetra(s)
 	if err != nil {
-		err = errors.WrapErrf(err, "error reading file size: %v", err)
-		return
+		return nil, errors.Wrap(err, "error reading file size")
 	}
-	mtime, err := s.ReadTime()
+	size := int32(tetraToInt(t))
+
+	t, err = readTetra(s)
 	if err != nil {
-		err = errors.WrapErrf(err, "error reading file time: %v", err)
-		return
+		return nil, errors.Wrap(err, "error reading file time")
 	}
+	mtime := tetraToTime(t)
 
 	// adb doesn't indicate when a file doesn't exist, but will return all zeros.
 	// Theoretically this could be an actual file, but that's very unlikely.
 	if mode == os.FileMode(0) && size == 0 && mtime == zeroTime {
-		return nil, errors.Errorf(errors.FileNoExistError, "file doesn't exist")
+		return nil, ErrFileNotExist
 	}
-	entry = &DirEntry{
+	return &DirEntry{
 		Mode:       mode,
 		Size:       size,
 		ModifiedAt: mtime,
-	}
+	}, nil
 }

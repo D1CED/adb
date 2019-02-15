@@ -1,5 +1,5 @@
 /*
-package adb is a Go interface to the Android Debug Bridge (adb).
+Package adb is a Go package for interoperation with the Android Debug Bridge (adb).
 
 See cmd/demo/demo.go for an example of how to use this library.
 
@@ -8,9 +8,3 @@ The client/server spec is defined at https://android.googlesource.com/platform/s
 WARNING This library is under heavy development, and its API is likely to change without notice.
 */
 package adb
-
-/*
-main components should be:
-    adb.Connect() net.Conn
-    Device
-*/

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/yosemite-open/go-adb/wire"
 )
 
 // syncFileWriter wraps a SyncConn that has requested to send a file.
@@ -17,12 +16,12 @@ type syncFileWriter struct {
 	mtime time.Time
 
 	// Reader used to read data from the adb connection.
-	sender wire.SyncSender
+	sender io.WriteCloser
 }
 
 var _ io.WriteCloser = &syncFileWriter{}
 
-func newSyncFileWriter(s wire.SyncSender, mtime time.Time) io.WriteCloser {
+func newSyncFileWriter(s io.WriteCloser, mtime time.Time) io.WriteCloser {
 	return &syncFileWriter{
 		mtime:  mtime,
 		sender: s,
@@ -52,14 +51,14 @@ func (w *syncFileWriter) Write(buf []byte) (n int, err error) {
 		// If buffer is larger than the max, we'll return the max size and leave it up to the
 		// caller to handle correctly.
 		partialBuf := buf
-		if len(partialBuf) > wire.SyncMaxChunkSize {
-			partialBuf = partialBuf[:wire.SyncMaxChunkSize]
+		if len(partialBuf) > SyncMaxChunkSize {
+			partialBuf = partialBuf[:SyncMaxChunkSize]
 		}
 
-		if err := w.sender.SendOctetString(wire.StatusSyncData); err != nil {
+		if err := sendStatus(w, StatusSyncData); err != nil {
 			return written, err
 		}
-		if err := w.sender.SendBytes(partialBuf); err != nil {
+		if _, err := sendMessage(w.sender, string(partialBuf)); err != nil {
 			return written, err
 		}
 
@@ -75,12 +74,11 @@ func (w *syncFileWriter) Close() error {
 		w.mtime = time.Now()
 	}
 
-	if err := w.sender.SendOctetString(wire.StatusSyncDone); err != nil {
-		return errors.WrapErrf(err, "error sending done chunk to close stream")
+	if err := sendStatus(w.sender, StatusSyncDone); err != nil {
+		return errors.Wrap(err, "error sending done chunk to close stream")
 	}
-	if err := w.sender.SendTime(w.mtime); err != nil {
-		return errors.WrapErrf(err, "error writing file modification time")
+	if err := sendTime(w.sender, w.mtime); err != nil {
+		return errors.Wrap(err, "error writing file modification time")
 	}
-
-	return errors.WrapErrf(w.sender.Close(), "error closing FileWriter")
+	return errors.WithMessage(w.sender.Close(), "error closing FileWriter")
 }

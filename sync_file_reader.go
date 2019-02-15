@@ -4,13 +4,12 @@ import (
 	"io"
 
 	"github.com/pkg/errors"
-	"github.com/yosemite-open/go-adb/wire"
 )
 
 // syncFileReader wraps a SyncConn that has requested to receive a file.
 type syncFileReader struct {
 	// Reader used to read data from the adb connection.
-	scanner SyncScanner
+	scanner io.ReadCloser
 
 	// Reader for the current chunk only.
 	chunkReader io.Reader
@@ -21,7 +20,7 @@ type syncFileReader struct {
 
 var _ io.ReadCloser = &syncFileReader{}
 
-func newSyncFileReader(s SyncScanner) (r io.ReadCloser, err error) {
+func newSyncFileReader(s io.ReadCloser) (r io.ReadCloser, err error) {
 	r = &syncFileReader{
 		scanner: s,
 	}
@@ -81,23 +80,24 @@ func (r *syncFileReader) Close() error {
 
 // readNextChunk creates an io.LimitedReader for the next chunk of data,
 // and returns io.EOF if the last chunk has been read.
-func readNextChunk(r SyncScanner) (io.Reader, error) {
-	status, err := r.ReadStatus("read-chunk")
+func readNextChunk(r io.Reader) (io.Reader, error) {
+	t, err := readTetra(r)
 	if err != nil {
-		if wire.IsAdbServerErrorMatching(err, readFileNotFoundPredicate) {
-			return nil, errors.Errorf(errors.FileNoExistError, "no such file or directory")
+		if errors.Cause(err) == ErrFileNotExist {
+			return nil, errors.Wrap(ErrFileNotExist, "no such file or directory")
 		}
 		return nil, err
 	}
+	status := tetraToString(t)
 
 	switch status {
-	case wire.StatusSyncData:
-		return r.ReadBytes()
-	case wire.StatusSyncDone:
+	case StatusSyncData:
+		return r, nil
+	case StatusSyncDone:
 		return nil, io.EOF
 	default:
-		return nil, errors.Errorf(errors.AssertionError, "expected chunk id '%s' or '%s', but got '%s'",
-			wire.StatusSyncData, wire.StatusSyncDone, []byte(status))
+		return nil, errors.Wrapf(ErrAssertionViolation, "expected chunk id '%s' or '%s', but got '%s'",
+			StatusSyncData, StatusSyncDone, status)
 	}
 }
 

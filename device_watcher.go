@@ -1,6 +1,7 @@
 package adb
 
 import (
+	"io"
 	"log"
 	"math/rand"
 	"runtime"
@@ -10,14 +11,6 @@ import (
 
 	"github.com/pkg/errors"
 )
-
-/*
-DeviceWatcher publishes device status change events.
-If the server dies while listening for events, it restarts the server.
-*/
-type DeviceWatcher struct {
-	*deviceWatcherImpl
-}
 
 // DeviceStateChangedEvent represents a device state transition.
 // Contains the device’s old and new states, but also provides methods to query the
@@ -38,7 +31,11 @@ func (s DeviceStateChangedEvent) WentOffline() bool {
 	return s.OldState == StateOnline && s.NewState != StateOnline
 }
 
-type deviceWatcherImpl struct {
+/*
+DeviceWatcher publishes device status change events.
+If the server dies while listening for events, it restarts the server.
+*/
+type DeviceWatcher struct {
 	server *Server
 
 	// If an error occurs, it is stored here and eventChan is close immediately after.
@@ -48,27 +45,25 @@ type deviceWatcherImpl struct {
 }
 
 func newDeviceWatcher(s *Server) *DeviceWatcher {
-	watcher := &DeviceWatcher{&deviceWatcherImpl{
+	watcher := &DeviceWatcher{
 		server:    s,
 		eventChan: make(chan DeviceStateChangedEvent),
-	}}
+	}
 	runtime.SetFinalizer(watcher, func(watcher *DeviceWatcher) {
 		watcher.Shutdown()
 	})
-	go publishDevices(watcher.deviceWatcherImpl)
+	go publishDevices(watcher)
 	return watcher
 }
 
-/*
-C returns a channel than can be received on to get events.
-If an unrecoverable error occurs, or Shutdown is called, the channel will be closed.
-*/
+// C returns a channel than can be received on to get events.
+// If an unrecoverable error occurs, or Shutdown is called, the channel will be closed.
 func (w *DeviceWatcher) C() <-chan DeviceStateChangedEvent {
 	return w.eventChan
 }
 
-// Err returns the error that caused the channel returned by C to be closed, if C is closed.
-// If C is not closed, its return value is undefined.
+// Err returns the error that caused the channel returned by C to be closed,
+// if C is closed. If C is not closed, its return value is undefined.
 func (w *DeviceWatcher) Err() error {
 	if err, ok := w.err.Load().(error); ok {
 		return err
@@ -76,51 +71,53 @@ func (w *DeviceWatcher) Err() error {
 	return nil
 }
 
-// Shutdown stops the watcher from listening for events and closes the channel returned
-// from C.
+// Shutdown stops the watcher from listening for events and closes the channel
+// returned from C.
+// TODO(z): Implement.
 func (w *DeviceWatcher) Shutdown() {
-	// TODO(z): Implement.
 }
 
-func (w *deviceWatcherImpl) reportErr(err error) {
+func (w *DeviceWatcher) reportErr(err error) {
 	w.err.Store(err)
 }
 
 /*
-publishDevices reads device lists from scanner, calculates diffs, and publishes events on
-eventChan.
+publishDevices reads device lists from scanner, calculates diffs, and publishes
+events on eventChan.
 Returns when scanner returns an error.
-Doesn't refer directly to a *DeviceWatcher so it can be GCed (which will,
-in turn, close Scanner and stop this goroutine).
+Doesn't refer directly to a *DeviceWatcher so it can be GCed (which will, in
+turn, close Scanner and stop this goroutine).
 
-TODO: to support shutdown, spawn a new goroutine each time a server connection is established.
-This goroutine should read messages and send them to a message channel. Can write errors directly
-to errVal. publishDevicesUntilError should take the msg chan and the scanner and select on the msg chan and stop chan, and if the stop
-chan sends, close the scanner and return true. If the msg chan closes, just return false.
-publishDevices can look at ret val: if false and err == EOF, reconnect. If false and other error, report err
-and abort. If true, report no error and stop.
+TODO: to support shutdown, spawn a new goroutine each time a server connection
+is established. This goroutine should read messages and send them to a
+message channel. Can write errors directly to errVal. publishDevicesUntilError
+should take the msg chan and the scanner and select on the msg chan and stop
+chan, and if the stop chan sends, close the scanner and return true.
+If the msg chan closes, just return false. publishDevices can look at ret val:
+if false and err == EOF, reconnect. If false and other error, report err and
+abort. If true, report no error and stop.
 */
-func publishDevices(watcher *deviceWatcherImpl) {
+func publishDevices(watcher *DeviceWatcher) {
 	defer close(watcher.eventChan)
 
 	var lastKnownStates map[string]DeviceState
 	finished := false
 
 	for {
-		scanner, err := connectToTrackDevices(watcher.server)
+		err := connectToTrackDevices(watcher.server)
 		if err != nil {
 			watcher.reportErr(err)
 			return
 		}
 
-		finished, err = publishDevicesUntilError(scanner, watcher.eventChan, &lastKnownStates)
+		finished, err = publishDevicesUntilError(watcher.server.conn, watcher.eventChan, &lastKnownStates)
 
 		if finished {
-			scanner.Close()
+			watcher.server.Close()
 			return
 		}
 
-		if errors.Cause(err) == ConnectionResetError {
+		if errors.Cause(err) == ErrConnectionReset {
 			// The server died, restart and reconnect.
 
 			// Delay by a random [0ms, 500ms) in case multiple DeviceWatchers are trying to
@@ -129,7 +126,7 @@ func publishDevices(watcher *deviceWatcherImpl) {
 
 			log.Printf("[DeviceWatcher] server died, restarting in %s…", delay)
 			time.Sleep(delay)
-			if err := watcher.server.Start(); err != nil {
+			if err := watcher.server.start(); err != nil {
 				log.Println("[DeviceWatcher] error restarting server, giving up")
 				watcher.reportErr(err)
 				return
@@ -142,25 +139,29 @@ func publishDevices(watcher *deviceWatcherImpl) {
 	}
 }
 
-func connectToTrackDevices(server *Server) (Conn, error) {
-	conn, err := server.Dial()
+func connectToTrackDevices(s *Server) error {
+	conn, err := s.dial("tcp", s.address)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := conn.SendMessage([]byte("host:track-devices")); err != nil {
+	if _, err := conn.Write([]byte("host:track-devices")); err != nil {
 		conn.Close()
-		return nil, err
+		return err
 	}
-	if _, err := conn.ReadStatus("host:track-devices"); err != nil {
+	if err := readStatus(conn); err != nil {
 		conn.Close()
-		return nil, err
+		return err
 	}
-	return conn, nil
+	s.conn = conn
+	return nil
 }
 
-func publishDevicesUntilError(scanner Conn, eventChan chan<- DeviceStateChangedEvent, lastKnownStates *map[string]DeviceState) (finished bool, err error) {
+func publishDevicesUntilError(
+	scanner io.Reader,
+	eventChan chan<- DeviceStateChangedEvent,
+	lastKnownStates *map[string]DeviceState) (finished bool, err error) {
 	for {
-		msg, err := scanner.ReadMessage()
+		msg, err := readMessage(scanner)
 		if err != nil {
 			return false, err
 		}
@@ -185,7 +186,7 @@ func parseDeviceStates(msg string) (states map[string]DeviceState, err error) {
 		}
 		fields := strings.Split(line, "\t")
 		if len(fields) != 2 {
-			err = errors.Wrapf(ParseError, "invalid device state line %d: %s", lineNum, line)
+			err = errors.Wrapf(ErrParsing, "invalid device state line %d: %s", lineNum, line)
 			return
 		}
 		serial, stateString := fields[0], fields[1]

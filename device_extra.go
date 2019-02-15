@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	retryablehttp "github.com/hashicorp/go-retryablehttp"
+	rhttp "github.com/hashicorp/go-retryablehttp"
 	"github.com/pkg/errors"
 )
 
@@ -24,14 +24,19 @@ type Process struct {
 }
 
 // ListProcesses return list of Process
-func (c *Device) ListProcesses() (ps []Process, err error) {
-	reader, err := c.OpenCommand("ps")
+func (d *Device) ListProcesses() ([]Process, error) {
+	err := d.OpenCommand("ps")
 	if err != nil {
-		return
+		return nil, err
 	}
-	defer reader.Close()
-	var fieldNames []string
-	bufrd := bufio.NewReader(reader)
+	defer d.server.Close()
+
+	var (
+		fieldNames []string
+		bufrd      = bufio.NewReader(d.server.conn)
+		ps         = make([]Process, 0, 10)
+	)
+
 	for {
 		line, _, err := bufrd.ReadLine()
 		fields := strings.Fields(strings.TrimSpace(string(line)))
@@ -47,9 +52,9 @@ func (c *Device) ListProcesses() (ps []Process, err error) {
 		}
 		var process Process
 		/* example output of command "ps"
-		USER     PID   PPID  VSIZE  RSS     WCHAN    PC         NAME
-		root      1     0     684    540   ffffffff 00000000 S /init
-		root      2     0     0      0     ffffffff 00000000 S kthreadd
+		USER  PID  PPID  VSIZE  RSS  WCHAN     PC         NAME
+		root    1     0    684  540  ffffffff  00000000 S /init
+		root    2     0      0    0  ffffffff  00000000 S kthreadd
 		*/
 		if len(fields) != len(fieldNames)+1 {
 			continue
@@ -70,7 +75,7 @@ func (c *Device) ListProcesses() (ps []Process, err error) {
 		}
 		ps = append(ps, process)
 	}
-	return
+	return ps, nil
 }
 
 // KillProcessByName return if killed success
@@ -191,7 +196,7 @@ func (s ShellExitError) Error() string {
 }
 
 // DoWriteFile return an object, use this object can Cancel write and get Process
-func (c *Device) DoSyncFile(path string, rd io.ReadCloser, size int64, perms os.FileMode) (aw *AsyncWriter, err error) {
+func (c *Device) DoSyncFile(path string, rd io.ReadCloser, size int64, perms os.FileMode) (aw *asyncWriter, err error) {
 	dst, err := c.OpenWrite(path, perms, time.Now())
 	if err != nil {
 		return nil, err
@@ -204,7 +209,7 @@ func (c *Device) DoSyncFile(path string, rd io.ReadCloser, size int64, perms os.
 	return awr, nil
 }
 
-func (c *Device) DoSyncLocalFile(dst string, src string, perms os.FileMode) (aw *AsyncWriter, err error) {
+func (c *Device) DoSyncLocalFile(dst string, src string, perms os.FileMode) (aw *asyncWriter, err error) {
 	f, err := os.Open(src)
 	if err != nil {
 		return
@@ -217,8 +222,8 @@ func (c *Device) DoSyncLocalFile(dst string, src string, perms os.FileMode) (aw 
 	return c.DoSyncFile(dst, f, finfo.Size(), perms)
 }
 
-func (c *Device) DoSyncHTTPFile(dst string, srcUrl string, perms os.FileMode) (aw *AsyncWriter, err error) {
-	res, err := retryablehttp.Get(srcUrl)
+func (c *Device) DoSyncHTTPFile(dst string, srcUrl string, perms os.FileMode) (aw *asyncWriter, err error) {
+	res, err := rhttp.Get(srcUrl)
 
 	if err != nil {
 		return
@@ -247,7 +252,7 @@ func (c *Device) WriteToFile(path string, rd io.Reader, perms os.FileMode) (writ
 				return
 			}
 			finfo, er := c.Stat(path)
-			if er != nil && errors.Cause(er) == FileNoExistError {
+			if er != nil && errors.Cause(er) == ErrFileNotExist {
 				err = er
 				return
 			}
@@ -267,7 +272,7 @@ func (c *Device) WriteToFile(path string, rd io.Reader, perms os.FileMode) (writ
 
 // WriteHttpToFile download http resource to device
 func (c *Device) WriteHttpToFile(path string, urlStr string, perms os.FileMode) (written int64, err error) {
-	res, err := retryablehttp.Get(urlStr)
+	res, err := rhttp.Get(urlStr)
 	if err != nil {
 		return
 	}

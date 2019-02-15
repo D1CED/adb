@@ -1,109 +1,125 @@
 package adb
 
 import (
-	"os"
+	"bytes"
+	"fmt"
+	"io"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 )
 
 const (
-	// ADBExecutableName is the name in Path
-	adbExecutableName = "adb"
-	// ADBPort is the default port for the adb server to listens on.
-	adbPort = 5037
+	// DefaultExecutableName is the name of the ADB-Server on the Path
+	DefaultExecutableName = "adb"
+	// DefaultPort is the default port for the ADB-Server to listens on.
+	DefaultPort = 5037
 )
 
-var (
-	lookPath         = exec.LookPath
-	isExecutableFile = func(path string) error {
-		info, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return errors.New("not a regular file")
-		}
-		return isExecutable(path)
-	}
-	cmdCombinedOutput = func(name string, arg ...string) ([]byte, error) {
-		return exec.Command(name, arg...).CombinedOutput()
-	}
-)
-
-// Server communicates with host services on the adb server.
-// Use New or NewWithConf
-// TODO(z): Finish implementing host services.
+// Server holds information needed to connect to a server repeatedly.
+// Use New or NewDefault to create one.
 type Server struct {
-	// path to the adb executable. If empty, the PATH environment variable will be searched.
-	path string
-	// host and port the adb server is listening on.
-	// If not specified, will use the default port on localhost.
-	host string
-	port int
+	path    string
+	address string
+
+	conn net.Conn
+
 	// dialer used to connect to the adb server.
-	dialer Dial
+	// Default is the regular Dialer form net.
+	// This exist only for easier mocking.
+	dial func(network, address string) (net.Conn, error)
 }
 
-// New creates a new Adb client that uses the default ServerConfig.
-func New() (Server, error) {
-	// "127.0.0.1" as port on windows recommended
-	return NewWithConfig(ADBExecutableName, "localhost", ADBPort, TCPDial)
+// NewDefault creates a new Adb client that uses the default ServerConfig.
+func NewDefault() (*Server, error) {
+	return New(DefaultExecutableName, "localhost", DefaultPort)
 }
 
-func NewConfig(path, host string, port int, dialer Dial) (Server, error) {
-	s := Server{
-		path:   path,
-		host:   host,
-		port:   port,
-		dialer: dialer,
+// New creates a new Server.
+func New(path, host string, port int) (*Server, error) {
+	// maybe add path search for adb?
+	s := &Server{
+		path:    path,
+		address: fmt.Sprintf("%s:%d", host, port),
+		dial:    net.Dial,
 	}
-	if err := isExecutableFile(path); err != nil {
-		return Server{}, errors.Wrapf(err, "invalid adb executable: %s", path)
+	err := s.start()
+	if err != nil {
+		return nil, err
 	}
 	return s, nil
 }
 
-// Dial tries to connect to the server. If the first attempt fails, tries
-// starting the server before retrying. If the second attempt fails, returns the error.
-func (s Server) Dial() (Conn, error) {
-	conn, err := s.dialer(s.address())
+func (s *Server) start() error {
+	out, err := exec.Command(s.path, "start-server").CombinedOutput()
+	return errors.WithMessagef(err, "error starting server. Output:\n%s", out)
+}
+
+// requestResponse sends msg to server and writes the result into w.
+// The connection is closed.
+func (s *Server) requestResponse(msg string, w io.Writer) (int64, error) {
+	conn, err := s.dial("tcp", s.address)
 	if err != nil {
-		// Attempt to start the server and try again.
-		if err = s.Start(); err != nil {
-			return nil, errors.Wrap(err, "error starting server for dial")
-		}
-		return s.dialer(s.address())
+		return 0, err
 	}
-	return conn, nil
-}
-
-// Start ensures there is a server running.
-func (s Server) Start() error {
-	output, err := cmdCombinedOutput(s.path, "start-server")
-	outputStr := strings.TrimSpace(string(output))
-	return errors.Wrapf(err, "error starting server: %s\noutput:\n%s", err, outputStr)
-}
-
-func (s Server) Device(d DeviceDescriptor) *Device {
-	return &Device{
-		server:         s,
-		descriptor:     d,
-		deviceListFunc: s.ListDevices,
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_, err = conn.Write([]byte(fmt.Sprintf("%04x%s", len(msg), msg)))
+	if err != nil {
+		return 0, err
 	}
+	err = readStatus(conn)
+	if err != nil {
+		return 0, err
+	}
+	t, err := readTetra(conn)
+	if err != nil {
+		return 0, err
+	}
+	length := hexTetraToInt(t)
+	return io.CopyN(w, conn, int64(length))
 }
 
-func (s Server) NewDeviceWatcher() *DeviceWatcher {
-	return newDeviceWatcher(&s)
+// send sends msg to server reads status then closes the connection.
+func (s *Server) send(msg string) error {
+	conn, err := s.dial("tcp", s.address)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_, err = conn.Write([]byte(fmt.Sprintf("%04x%s", len(msg), msg)))
+	if err != nil {
+		return err
+	}
+	return wantStatus("OKAY", conn)
 }
 
-// Version asks the ADB server for its internal version number.
-func (s Server) Version() (int, error) {
+// Opens a connection to the adb server.
+func (s *Server) openConn() error {
+	conn, err := s.dial("tcp", s.address)
+	if err != nil {
+		return err
+	}
+	s.conn = conn
+	return nil
+}
 
-	parseServerVersion := func(versionRaw []byte) (int, error) {
-		versionStr := string(versionRaw)
+func (s *Server) Close() error {
+	if s.conn == nil {
+		return nil
+	}
+	return s.conn.Close()
+}
+
+// Version asks the adb server for its internal version number.
+func (s *Server) Version() (int, error) {
+	// TODO(JMH): Check server version format
+	var parseVersion = func(versionStr string) (int, error) {
 		version, err := strconv.ParseInt(versionStr, 16, 32)
 		if err != nil {
 			return 0, errors.Wrapf(err, "error parsing server version: %s", versionStr)
@@ -111,48 +127,56 @@ func (s Server) Version() (int, error) {
 		return int(version), nil
 	}
 
-	resp, err := roundTripSingleResponse(s, "host:version")
+	b := &strings.Builder{}
+	_, err := s.requestResponse("host:version", b)
 	if err != nil {
-		return 0, wrapClientError(err, s, "GetServerVersion")
+		return 0, err
 	}
-	version, err := parseServerVersion(resp)
+	v, err := parseVersion(b.String())
 	if err != nil {
-		return 0, wrapClientError(err, s, "GetServerVersion")
+		return 0, err
 	}
-	return version, nil
+	return v, nil
 }
 
 // Kill tells the server to quit immediately.
 //
 // Corresponds to the command:
 //     adb kill-server
-func (s Server) Kill() error {
-	conn, err := s.Dial()
+func (s *Server) Kill() error {
+	return s.send("host:kill")
+}
+
+// ListDevices returns the list of connected devices.
+//
+// Corresponds to the command:
+//     adb devices -l
+func (s *Server) ListDevices() ([]DeviceInfo, error) {
+	b := &bytes.Buffer{}
+	_, err := s.requestResponse("host:devices-l", b)
 	if err != nil {
-		return wrapClientError(err, s, "KillServer")
+		return nil, err
 	}
-	defer conn.Close()
-
-	if err = conn.SendMessage([]byte("host:kill")); err != nil {
-		return wrapClientError(err, s, "KillServer")
+	devices, err := parseDeviceList(b, parseDeviceLong)
+	if err != nil {
+		return nil, err
 	}
-
-	return nil
+	return devices, nil
 }
 
 // ListDeviceSerials returns the serial numbers of all attached devices.
 //
 // Corresponds to the command:
 //     adb devices
-func (s Server) ListDeviceSerials() ([]string, error) {
-	resp, err := roundTripSingleResponse(s, "host:devices")
+func (s *Server) ListDeviceSerials() ([]string, error) {
+	b := &bytes.Buffer{}
+	_, err := s.requestResponse("host:devices", b)
 	if err != nil {
-		return nil, wrapClientError(err, s, "ListDeviceSerials")
+		return nil, err
 	}
-
-	devices, err := parseDeviceList(string(resp), parseDeviceShort)
+	devices, err := parseDeviceList(b, parseDeviceShort)
 	if err != nil {
-		return nil, wrapClientError(err, s, "ListDeviceSerials")
+		return nil, err
 	}
 
 	serials := make([]string, len(devices))
@@ -162,53 +186,25 @@ func (s Server) ListDeviceSerials() ([]string, error) {
 	return serials, nil
 }
 
-// ListDevices returns the list of connected devices.
-//
-// Corresponds to the command:
-//     adb devices -l
-func (s Server) ListDevices() ([]DeviceInfo, error) {
-	resp, err := roundTripSingleResponse(s, "host:devices-l")
-	if err != nil {
-		return nil, wrapClientError(err, s, "ListDevices")
+func (s *Server) Device(d DeviceDescriptor) *Device {
+	return &Device{
+		server:     &(*s),
+		descriptor: d,
 	}
-
-	devices, err := parseDeviceList(string(resp), parseDeviceLong)
-	if err != nil {
-		return nil, wrapClientError(err, s, "ListDevices")
-	}
-	return devices, nil
 }
 
-func roundTripSingleResponse(adb Server, req string) ([]byte, error) {
-	conn, err := adb.Dial()
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	return roundTripSingleResponseConn(conn, []byte(req))
+func (s *Server) NewDeviceWatcher() *DeviceWatcher {
+	return newDeviceWatcher(s)
 }
 
-func roundTripSingleNoResponse(s Server, req string) error {
-
-	// RoundTripSingleResponse sends a message to the server
-	// Only read status
-	roundTripSingleNoResponse2 := func(c Conn, req []byte) error {
-		err := c.SendMessage(req)
-		if err != nil {
-			return err
-		}
-		_, err = c.ReadStatus(string(req))
-		return err
-	}
-
-	conn, err := s.Dial()
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	return roundTripSingleNoResponse2(conn, []byte(req))
+// marked for removal. Use Server.requestResponse.
+func roundTripSingleResponse(s *Server, req string) ([]byte, error) {
+	b := &bytes.Buffer{}
+	_, err := s.requestResponse(req, b)
+	return b.Bytes(), err
 }
 
-func (s Server) address() string {
-	return s.host + ":" + strconv.Itoa(s.port)
+// marked for removal. Use Server.send.
+func roundTripSingleNoResponse(s *Server, req string) error {
+	return s.send(req)
 }

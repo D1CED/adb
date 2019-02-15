@@ -1,9 +1,11 @@
 package adb
 
 import (
-	"fmt"
+	"io"
 	"os"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 // DirEntry holds information about a directory entry on a device.
@@ -16,7 +18,7 @@ type DirEntry struct {
 
 // DirEntries iterates over directory entries.
 type DirEntries struct {
-	scanner SyncScanner
+	scanner io.ReadCloser
 
 	currentEntry *DirEntry
 	err          error
@@ -71,47 +73,46 @@ func (entries *DirEntries) Close() error {
 	return entries.scanner.Close()
 }
 
-func readNextDirListEntry(s SyncScanner) (entry *DirEntry, done bool, err error) {
-	status, err := s.ReadStatus("dir-entry")
+func readNextDirListEntry(s io.Reader) (*DirEntry, bool, error) {
+	t, err := readTetra(s)
 	if err != nil {
-		return
+		return nil, false, err
 	}
+	status := tetraToString(t)
 
 	if status == "DONE" {
-		done = true
-		return
+		return nil, true, nil
 	} else if status != "DENT" {
-		err = fmt.Errorf("error reading dir entries: expected dir entry ID 'DENT', but got '%s'", status)
-		return
+		return nil, false, errors.Errorf("error reading dir entries: expected dir entry ID 'DENT', but got '%s'", status)
 	}
 
-	mode, err := s.ReadFileMode()
+	t, err = readTetra(s)
 	if err != nil {
-		err = fmt.Errorf("error reading dir entries: error reading file mode: %v", err)
-		return
+		return nil, false, errors.Wrap(err, "error reading dir entries: error reading file mode")
 	}
-	size, err := s.ReadInt32()
+	mode := tetraToFileMode(t)
+
+	t, err = readTetra(s)
 	if err != nil {
-		err = fmt.Errorf("error reading dir entries: error reading file size: %v", err)
-		return
+		return nil, false, errors.Wrap(err, "error reading dir entries: error reading file size")
 	}
-	mtime, err := s.ReadTime()
+	size := int32(tetraToInt(t))
+
+	t, err = readTetra(s)
 	if err != nil {
-		err = fmt.Errorf("error reading dir entries: error reading file time: %v", err)
-		return
+		return nil, false, errors.Wrap(err, "error reading dir entries: error reading file time")
 	}
-	name, err := s.ReadString()
+	mtime := tetraToTime(t)
+
+	name, err := readMessage(s)
 	if err != nil {
-		err = fmt.Errorf("error reading dir entries: error reading file name: %v", err)
-		return
+		return nil, false, errors.Wrap(err, "error reading dir entries: error reading file name")
 	}
 
-	done = false
-	entry = &DirEntry{
+	return &DirEntry{
 		Name:       name,
 		Mode:       mode,
 		Size:       size,
 		ModifiedAt: mtime,
-	}
-	return
+	}, false, nil
 }

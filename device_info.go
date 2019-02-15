@@ -2,6 +2,7 @@ package adb
 
 import (
 	"bufio"
+	"io"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -18,14 +19,9 @@ type DeviceInfo struct {
 	USB string
 }
 
-// IsUSB returns true if the device is connected via USB.
-func (d DeviceInfo) IsUSB() bool {
-	return d.USB != ""
-}
-
 func newDevice(serial string, attrs map[string]string) (DeviceInfo, error) {
 	if serial == "" {
-		return DeviceInfo{}, errors.Wrap(AssertionError, "device serial cannot be blank")
+		return DeviceInfo{}, errors.Wrap(ErrAssertionViolation, "device serial cannot be blank")
 	}
 	return DeviceInfo{
 		Serial:     serial,
@@ -36,9 +32,14 @@ func newDevice(serial string, attrs map[string]string) (DeviceInfo, error) {
 	}, nil
 }
 
-func parseDeviceList(list string, lineParseFunc func(string) (DeviceInfo, error)) ([]DeviceInfo, error) {
+// IsUSB returns true if the device is connected via USB.
+func (d DeviceInfo) IsUSB() bool {
+	return d.USB != ""
+}
+
+func parseDeviceList(list io.Reader, lineParseFunc func(string) (DeviceInfo, error)) ([]DeviceInfo, error) {
 	devices := []DeviceInfo{}
-	scanner := bufio.NewScanner(strings.NewReader(list))
+	scanner := bufio.NewScanner(list)
 
 	for scanner.Scan() {
 		device, err := lineParseFunc(scanner.Text())
@@ -54,7 +55,7 @@ func parseDeviceList(list string, lineParseFunc func(string) (DeviceInfo, error)
 func parseDeviceShort(line string) (DeviceInfo, error) {
 	fields := strings.Fields(line)
 	if len(fields) != 2 {
-		return DeviceInfo{}, errors.Wrapf(ParseError,
+		return DeviceInfo{}, errors.Wrapf(ErrParsing,
 			"malformed device line, expected 2 fields but found %d", len(fields))
 	}
 	return newDevice(fields[0], map[string]string{})
@@ -63,7 +64,7 @@ func parseDeviceShort(line string) (DeviceInfo, error) {
 func parseDeviceLong(line string) (DeviceInfo, error) {
 	fields := strings.Fields(line)
 	if len(fields) < 5 {
-		return DeviceInfo{}, errors.Wrapf(ParseError,
+		return DeviceInfo{}, errors.Wrapf(ErrParsing,
 			"malformed device line, expected at least 5 fields but found %d", len(fields))
 	}
 

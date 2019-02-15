@@ -6,7 +6,7 @@ package adb
 // 	Plugged in: StateDisconnected->StateOffline->StateOnline
 // 	Unplugged:  StateOnline->StateDisconnected
 //go:generate stringer -type=DeviceState
-type DeviceState int8
+type DeviceState uint8
 
 const (
 	StateInvalid DeviceState = iota

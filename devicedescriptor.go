@@ -44,7 +44,7 @@ func (d DeviceDescriptor) String() string {
 	}
 }
 
-func (d DeviceDescriptor) getHostPrefix() string {
+func (d DeviceDescriptor) hostPrefix() string {
 	switch d.descriptor {
 	case device:
 		return "host"
@@ -59,7 +59,7 @@ func (d DeviceDescriptor) getHostPrefix() string {
 	}
 }
 
-func (d DeviceDescriptor) getTransportDescriptor() string {
+func (d DeviceDescriptor) transportDescriptor() string {
 	switch d.descriptor {
 	case device:
 		return "transport-any"

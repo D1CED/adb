@@ -8,10 +8,10 @@ import (
 	"github.com/pkg/errors"
 )
 
-type AsyncWriter struct {
-	Done           chan bool
-	DoneCopy       chan bool // for debug
-	C              chan bool
+type asyncWriter struct {
+	Done           chan struct{}
+	DoneCopy       chan struct{} // for debug
+	C              chan struct{}
 	err            error
 	dst            io.WriteCloser
 	dstPath        string
@@ -22,11 +22,11 @@ type AsyncWriter struct {
 	wg             sync.WaitGroup
 }
 
-func newAsyncWriter(dev *Device, dst io.WriteCloser, dstPath string, totalSize int64) *AsyncWriter {
-	return &AsyncWriter{
-		Done:      make(chan bool),
-		DoneCopy:  make(chan bool, 1),
-		C:         make(chan bool),
+func newAsyncWriter(dev *Device, dst io.WriteCloser, dstPath string, totalSize int64) *asyncWriter {
+	return &asyncWriter{
+		Done:      make(chan struct{}),
+		DoneCopy:  make(chan struct{}, 1),
+		C:         make(chan struct{}),
 		dst:       dst,
 		dstPath:   dstPath,
 		dev:       dev,
@@ -36,59 +36,59 @@ func newAsyncWriter(dev *Device, dst io.WriteCloser, dstPath string, totalSize i
 }
 
 // BytesCompleted returns the total number of bytes which have been copied to the destination
-func (a *AsyncWriter) BytesCompleted() int64 {
-	return a.bytesCompleted
+func (aw *asyncWriter) BytesCompleted() int64 {
+	return aw.bytesCompleted
 }
 
-func (a *AsyncWriter) Progress() float64 {
-	if (a.TotalSize) == 0 {
-		return 0.0
+func (aw *asyncWriter) Progress() float64 {
+	if (aw.TotalSize) == 0 {
+		return 0
 	}
-	return float64(a.bytesCompleted) / float64(a.TotalSize)
+	return float64(aw.bytesCompleted) / float64(aw.TotalSize)
 }
 
 // Err return error immediately
-func (a *AsyncWriter) Err() error {
-	return a.err
+func (aw *asyncWriter) Err() error {
+	return aw.err
 }
 
-func (a *AsyncWriter) Cancel() error {
-	return a.dst.Close()
+func (aw *asyncWriter) Cancel() error {
+	return aw.dst.Close()
 }
 
 // Wait blocks until sync is completed
-func (a *AsyncWriter) Wait() {
-	<-a.Done
+func (aw *asyncWriter) Wait() {
+	<-aw.Done
 }
 
-func (a *AsyncWriter) doCopy(reader io.Reader) {
-	a.wg.Add(1)
-	defer a.wg.Done()
+func (aw *asyncWriter) doCopy(reader io.Reader) {
+	aw.wg.Add(1)
+	defer aw.wg.Done()
 
-	go a.darinProgress()
-	written, err := io.Copy(a.dst, reader)
+	go aw.darinProgress()
+	written, err := io.Copy(aw.dst, reader)
 	if err != nil {
-		a.err = err
-		a.copyErrC <- err
+		aw.err = err
+		aw.copyErrC <- err
 	}
-	a.TotalSize = written
-	defer a.dst.Close()
-	a.DoneCopy <- true
+	aw.TotalSize = written
+	defer aw.dst.Close()
+	aw.DoneCopy <- struct{}{}
 }
 
-func (a *AsyncWriter) darinProgress() {
+func (a *asyncWriter) darinProgress() {
 	t := time.NewTicker(time.Millisecond * 500)
 	defer func() {
 		t.Stop()
 		a.wg.Wait()
-		a.Done <- true
+		a.Done <- struct{}{}
 	}()
 	var lastSize int32
 	for {
 		select {
 		case <-t.C:
 			finfo, err := a.dev.Stat(a.dstPath)
-			if err != nil && errors.Cause(err) != FileNoExistError {
+			if err != nil && errors.Cause(err) != ErrFileNotExist {
 				a.err = err
 				return
 			}
@@ -98,7 +98,7 @@ func (a *AsyncWriter) darinProgress() {
 			if lastSize != finfo.Size {
 				lastSize = finfo.Size
 				select {
-				case a.C <- true:
+				case a.C <- struct{}{}:
 				default:
 				}
 			}
