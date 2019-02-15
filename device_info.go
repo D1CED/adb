@@ -9,7 +9,7 @@ import (
 )
 
 type DeviceInfo struct {
-	// Always set.
+	// Must be always set.
 	Serial string
 	// Product, device, and model are not set in the short form.
 	Product    string
