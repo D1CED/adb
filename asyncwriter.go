@@ -2,112 +2,112 @@ package adb
 
 import (
 	"io"
-	"sync"
-	"time"
-
-	"github.com/pkg/errors"
+	"sync/atomic"
 )
 
-type asyncWriter struct {
-	Done           chan struct{}
-	DoneCopy       chan struct{} // for debug
-	C              chan struct{}
-	err            error
-	dst            io.WriteCloser
-	dstPath        string
-	TotalSize      int64
-	dev            *Device
+// AsyncWriter does copying in the background.
+type AsyncWriter struct {
+	// channel for cancelation. Send a channel over this and listen on it
+	// to wait for cacel confirmation. dst will be closed.
+	cancel    chan struct{}
+	err       atomic.Value
+	dst       io.WriteCloser
+	totalSize int64
+	dev       *Device
+	// atomic completion count
 	bytesCompleted int64
-	copyErrC       chan error
-	wg             sync.WaitGroup
 }
 
-func newAsyncWriter(dev *Device, dst io.WriteCloser, dstPath string, totalSize int64) *asyncWriter {
-	return &asyncWriter{
-		Done:      make(chan struct{}),
-		DoneCopy:  make(chan struct{}, 1),
-		C:         make(chan struct{}),
+func newAsyncWriter(dev *Device, dst io.WriteCloser, totalSize int64) *AsyncWriter {
+	return &AsyncWriter{
+		cancel:    make(chan struct{}),
 		dst:       dst,
-		dstPath:   dstPath,
 		dev:       dev,
-		TotalSize: totalSize,
-		copyErrC:  make(chan error, 1),
+		totalSize: totalSize,
 	}
 }
 
 // BytesCompleted returns the total number of bytes which have been copied to the destination
-func (aw *asyncWriter) BytesCompleted() int64 {
-	return aw.bytesCompleted
+func (aw *AsyncWriter) BytesCompleted() int64 {
+	return atomic.LoadInt64(&aw.bytesCompleted)
 }
 
-func (aw *asyncWriter) Progress() float64 {
-	if (aw.TotalSize) == 0 {
+// Progress returns the progress between 0 and 1.
+func (aw *AsyncWriter) Progress() float64 {
+	if aw.totalSize == 0 {
 		return 0
 	}
-	return float64(aw.bytesCompleted) / float64(aw.TotalSize)
+	return float64(atomic.LoadInt64(&aw.bytesCompleted)) / float64(aw.totalSize)
 }
 
-// Err return error immediately
-func (aw *asyncWriter) Err() error {
-	return aw.err
-}
-
-func (aw *asyncWriter) Cancel() error {
-	return aw.dst.Close()
-}
-
-// Wait blocks until sync is completed
-func (aw *asyncWriter) Wait() {
-	<-aw.Done
-}
-
-func (aw *asyncWriter) doCopy(reader io.Reader) {
-	aw.wg.Add(1)
-	defer aw.wg.Done()
-
-	go aw.darinProgress()
-	written, err := io.Copy(aw.dst, reader)
-	if err != nil {
-		aw.err = err
-		aw.copyErrC <- err
+// Err return a potential error immediately.
+func (aw *AsyncWriter) Err() error {
+	v := aw.err.Load()
+	if err, ok := v.(error); ok {
+		return err
 	}
-	aw.TotalSize = written
-	defer aw.dst.Close()
-	aw.DoneCopy <- struct{}{}
+	return nil
 }
 
-func (a *asyncWriter) darinProgress() {
-	t := time.NewTicker(time.Millisecond * 500)
+// Cancel cancels the asyncronus write. Blocks until cancel was confirmed.
+// Data written will not be undone.
+func (aw *AsyncWriter) Cancel() {
+	select {
+	case <-aw.cancel:
+		return
+	case aw.cancel <- struct{}{}:
+		close(aw.cancel)
+	}
+}
+
+// Wait blocks until the operation is completed or an error ocurred.
+// Check for an error afterwards.
+func (aw *AsyncWriter) Wait() {
+	<-aw.cancel
+}
+
+// call this from a goroutine
+// redFrom closes aw.cancel on complete but not if canceled.
+func (aw *AsyncWriter) readFrom(r io.Reader) {
 	defer func() {
-		t.Stop()
-		a.wg.Wait()
-		a.Done <- struct{}{}
+		err := aw.dst.Close()
+		if err != nil && aw.err.Load() == nil {
+			aw.err.Store(err)
+		}
 	}()
-	var lastSize int32
+	buf := make([]byte, 16*1024)
+outer:
 	for {
 		select {
-		case <-t.C:
-			finfo, err := a.dev.Stat(a.dstPath)
-			if err != nil && errors.Cause(err) != ErrFileNotExist {
-				a.err = err
-				return
-			}
-			if finfo == nil {
-				continue
-			}
-			if lastSize != finfo.Size {
-				lastSize = finfo.Size
-				select {
-				case a.C <- struct{}{}:
-				default:
+		case <-aw.cancel:
+			return
+		default:
+			nr, er := r.Read(buf)
+			if nr > 0 {
+				nw, ew := aw.dst.Write(buf[0:nr])
+				if nw > 0 {
+					atomic.AddInt64(&aw.bytesCompleted, int64(nw))
+				}
+				if ew != nil {
+					aw.err.Store(ew)
+					break outer
+				}
+				if nr != nw {
+					aw.err.Store(io.ErrShortWrite)
+					break outer
 				}
 			}
-			a.bytesCompleted = int64(finfo.Size)
-			if a.TotalSize != 0 && a.bytesCompleted >= a.TotalSize {
-				return
+			if er != nil {
+				if er != io.EOF {
+					aw.err.Store(er)
+				}
+				break outer
 			}
-		case <-a.copyErrC:
-			return
 		}
+	}
+	select {
+	case <-aw.cancel:
+	default:
+		close(aw.cancel)
 	}
 }

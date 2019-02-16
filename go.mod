@@ -10,7 +10,7 @@ require (
 	github.com/mattn/go-isatty v0.0.4 // indirect
 	github.com/pkg/errors v0.8.1
 	github.com/stretchr/testify v1.3.0
-	golang.org/x/sys v0.0.0-20190204203706-41f3e6584952
+	golang.org/x/sys v0.0.0-20190204203706-41f3e6584952 // indirect
 	gopkg.in/VividCortex/ewma.v1 v1.1.1 // indirect
 	gopkg.in/cheggaaa/pb.v2 v2.0.6 // indirect
 	gopkg.in/fatih/color.v1 v1.7.0 // indirect

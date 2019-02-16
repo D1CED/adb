@@ -68,7 +68,7 @@ func (s *Server) requestResponse(msg string, w io.Writer) (int64, error) {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	_, err = conn.Write([]byte(fmt.Sprintf("%04x%s", len(msg), msg)))
+	_, err = sendMessage(conn, msg)
 	if err != nil {
 		return 0, err
 	}
@@ -92,7 +92,7 @@ func (s *Server) send(msg string) error {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	_, err = conn.Write([]byte(fmt.Sprintf("%04x%s", len(msg), msg)))
+	_, err = sendMessage(conn, msg)
 	if err != nil {
 		return err
 	}
