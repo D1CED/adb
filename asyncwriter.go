@@ -7,8 +7,7 @@ import (
 
 // AsyncWriter does copying in the background.
 type AsyncWriter struct {
-	// channel for cancelation. Send a channel over this and listen on it
-	// to wait for cacel confirmation. dst will be closed.
+	// channel for cancelation. Maybe convert back to (chan chan struct{})
 	cancel    chan struct{}
 	err       atomic.Value
 	dst       io.WriteCloser
@@ -76,7 +75,6 @@ func (aw *AsyncWriter) readFrom(r io.Reader) {
 		}
 	}()
 	buf := make([]byte, 16*1024)
-outer:
 	for {
 		select {
 		case <-aw.cancel:
@@ -90,18 +88,18 @@ outer:
 				}
 				if ew != nil {
 					aw.err.Store(ew)
-					break outer
+					break
 				}
 				if nr != nw {
 					aw.err.Store(io.ErrShortWrite)
-					break outer
+					break
 				}
 			}
 			if er != nil {
 				if er != io.EOF {
 					aw.err.Store(er)
 				}
-				break outer
+				break
 			}
 		}
 	}

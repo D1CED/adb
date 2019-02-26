@@ -1,6 +1,7 @@
 package adb
 
 import (
+	"encoding/binary"
 	"io"
 	"os"
 	"time"
@@ -9,110 +10,64 @@ import (
 )
 
 // DirEntry holds information about a directory entry on a device.
+// TODO(jmh): implement os.FileInfo for this.
 type DirEntry struct {
 	Name       string
 	Mode       os.FileMode
-	Size       int32
+	Size       uint32
 	ModifiedAt time.Time
 }
 
-// DirEntries iterates over directory entries.
-type DirEntries struct {
-	scanner io.ReadCloser
-
-	currentEntry *DirEntry
-	err          error
-}
-
-// ReadAllDirEntries reads all the remaining directory entries into a slice,
+// ReadAllDirEntries reads directory entries into a slice,
 // closes self, and returns any error.
 // If err is non-nil, result will contain any entries read until the error occurred.
-func (entries *DirEntries) ReadAll() (result []*DirEntry, err error) {
-	defer entries.Close()
-
-	for entries.Next() {
-		result = append(result, entries.Entry())
+func ReadAllDirEntries(r io.Reader) ([]DirEntry, error) {
+	result := make([]DirEntry, 0, 4)
+	de, err := readNextDirListEntry(r)
+	for err == nil {
+		result = append(result, de)
+		de, err = readNextDirListEntry(r)
 	}
-	err = entries.Err()
-
-	return
+	if err != done {
+		return result, err
+	}
+	return result, nil
 }
 
-func (entries *DirEntries) Next() bool {
-	if entries.err != nil {
-		return false
+// done signals successful completion
+var done = errors.New("DONE")
+
+func readNextDirListEntry(r io.Reader) (DirEntry, error) {
+	header := make([]byte, 4*5)
+	n, err := io.ReadFull(r, header)
+	if err == io.ErrUnexpectedEOF {
+		if n == 4 && string(header[:4]) == statusSyncDone {
+			return DirEntry{}, done
+		} else {
+			return DirEntry{}, errors.New("unexpected status")
+		}
+	}
+	if string(header[:4]) != statusSyncDent {
+		return DirEntry{}, errors.New("unexpected status")
 	}
 
-	entry, done, err := readNextDirListEntry(entries.scanner)
+	var (
+		mode   = os.FileMode(binary.LittleEndian.Uint32(header[4:8]))
+		size   = binary.LittleEndian.Uint32(header[8:12])
+		time   = time.Unix(int64(binary.LittleEndian.Uint32(header[12:16])), 0)
+		length = binary.LittleEndian.Uint32(header[16:20])
+	)
+
+	body := make([]byte, length)
+	_, err = io.ReadFull(r, body)
 	if err != nil {
-		entries.err = err
-		entries.Close()
-		return false
+		return DirEntry{}, nil
 	}
 
-	entries.currentEntry = entry
-	if done {
-		entries.Close()
-		return false
-	}
-
-	return true
-}
-
-func (entries *DirEntries) Entry() *DirEntry {
-	return entries.currentEntry
-}
-
-func (entries *DirEntries) Err() error {
-	return entries.err
-}
-
-// Close closes the connection to the adb.
-// Next() will call Close() before returning false.
-func (entries *DirEntries) Close() error {
-	return entries.scanner.Close()
-}
-
-func readNextDirListEntry(s io.Reader) (*DirEntry, bool, error) {
-	t, err := readTetra(s)
-	if err != nil {
-		return nil, false, err
-	}
-	status := tetraToString(t)
-
-	if status == "DONE" {
-		return nil, true, nil
-	} else if status != "DENT" {
-		return nil, false, errors.Errorf("error reading dir entries: expected dir entry ID 'DENT', but got '%s'", status)
-	}
-
-	t, err = readTetra(s)
-	if err != nil {
-		return nil, false, errors.Wrap(err, "error reading dir entries: error reading file mode")
-	}
-	mode := tetraToFileMode(t)
-
-	t, err = readTetra(s)
-	if err != nil {
-		return nil, false, errors.Wrap(err, "error reading dir entries: error reading file size")
-	}
-	size := int32(tetraToInt(t))
-
-	t, err = readTetra(s)
-	if err != nil {
-		return nil, false, errors.Wrap(err, "error reading dir entries: error reading file time")
-	}
-	mtime := tetraToTime(t)
-
-	name, err := readMessage(s)
-	if err != nil {
-		return nil, false, errors.Wrap(err, "error reading dir entries: error reading file name")
-	}
-
-	return &DirEntry{
-		Name:       name,
+	return DirEntry{
+		Name:       string(body),
 		Mode:       mode,
 		Size:       size,
-		ModifiedAt: mtime,
-	}, false, nil
+		ModifiedAt: time,
+	}, nil
 }

@@ -1,22 +1,41 @@
 package adb
 
-import "github.com/pkg/errors"
+import (
+	"fmt"
+
+	"github.com/pkg/errors"
+)
+
+// TODO(jmh): consider removing most of this sentinel error values and
+// provide useful error interfaces. Explicitly document error handling
+// possibilities on individual functions.
 
 // Sentinel error values used by this package
 var (
-	ErrPackageNotExist    = errors.New("package not exist")
-	ErrAssertionViolation = errors.New("AssertionError")
-	ErrParsing            = errors.New("ParseError")
-	// The server was not available on the requested port.
-	ErrServerNotAvailable = errors.New("ServerNotAvailable")
-	// General network error communicating with the server.
-	ErrNetworkIO = errors.New("NetworkError")
+	ErrPackageNotExist    = errors.New("package does not exist")
+	ErrAssertionViolation = errors.New("assertion violation")
 	// The connection to the server was reset in the middle of an operation. Server probably died.
-	ErrConnectionReset = errors.New("ConnectionResetError")
-	// The server returned an error message, but we couldn't parse it.
-	ErrError = errors.New("ADBError")
-	// The server returned a "device not found" error.
-	ErrDeviceNotFound = errors.New("DeviceNotFound")
+	ErrConnectionReset = errors.New("connection reset")
 	// Tried to perform an operation on a path that doesn't exist on the device.
-	ErrFileNotExist = errors.New("FileNoExistError")
+	ErrFileNotExist   = errors.New("file does not exist")
+	ErrNotImplemented = errors.New("not implemented")
 )
+
+type UnexpectedStatusError struct {
+	want []string
+	got  string
+}
+
+func (us *UnexpectedStatusError) Error() string {
+	return fmt.Sprintf("want one of %v, got %s", us.want, us.got)
+}
+
+// Rename CmdError?
+type ShellExitError struct {
+	Command  string
+	ExitCode int
+}
+
+func (s ShellExitError) Error() string {
+	return fmt.Sprintf("shell %q exit code %d", s.Command, s.ExitCode)
+}

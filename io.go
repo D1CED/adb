@@ -1,129 +1,133 @@
 package adb
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
-	"os"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/pkg/errors"
 )
 
-func sendTime(w io.Writer, t time.Time) error {
-	i := int32(t.Unix())
-	j := int32ToTetra(i)
-	_, err := w.Write(j[:])
-	return err
-}
+const (
+	statusOK   = "OKAY"
+	statusFail = "FAIL"
+)
 
-func sendStatus(w io.Writer, status string) error {
-	_, err := w.Write([]byte(status))
-	return err
-}
-
-func sendMessage(w io.Writer, msg string) (int, error) {
-	return w.Write([]byte(fmt.Sprintf("%04x%s", len(msg), msg)))
-}
-
-func readMessage(r io.Reader) (string, error) {
-	t, err := readTetra(r)
-	if err != nil {
-		return "", err
-	}
-	length := hexTetraToInt(t)
-	b := &strings.Builder{}
-	_, err = io.CopyN(b, r, int64(length))
-	return b.String(), err
-}
-
-func readTetra(r io.Reader) ([4]byte, error) {
-	var t [4]byte
-	_, err := r.Read(t[:])
-	if err != nil {
-		return [4]byte{}, err
-	}
-	return t, nil
-}
-
-func readStatus(r io.Reader) error {
-	t, err := readTetra(r)
+// use this only for short writes
+func sendMessage(w io.Writer, header, msg string) error {
+	n, err := w.Write([]byte(fmt.Sprintf("%04x%s%s", len(header)+len(msg), header, msg)))
 	if err != nil {
 		return err
 	}
-	if tetraToString(t) != "FAIL" {
-		return nil
-	}
-	t, err = readTetra(r)
-	if err != nil {
-		return err
-	}
-	length := hexTetraToInt(t)
-	b := make([]byte, length)
-	n, err := r.Read(b)
-	if err != nil {
-		return err
-	}
-	if n != length {
-		return errors.New("incomplete read")
-	}
-	return errors.New(string(b))
-}
-
-func wantStatus(status string, r io.Reader) error {
-	t, err := readTetra(r)
-	if err != nil {
-		return err
-	}
-	s := tetraToString(t)
-	if s == "FAIL" {
-		t, err := readTetra(r)
-		if err != nil {
-			return err
-		}
-		length := hexTetraToInt(t)
-		b := &strings.Builder{}
-		io.CopyN(b, r, int64(length))
-		return errors.New(b.String())
-	} else if s != status {
-		err := errors.New(s)
-		return errors.Wrapf(err, "got unexpected status, want %s", status)
+	if n != len(msg)+4 {
+		return io.ErrShortWrite
 	}
 	return nil
 }
 
-func int32ToTetra(i int32) [4]byte {
-	var t [4]byte
-	for j := range t {
-		t[i] = byte(i >> uint(j*8))
+func sendSyncMessage(w io.Writer, status, msg string) error {
+	if len(msg) > syncMaxChunkSize {
+		return errors.New("maximum message length exceded")
 	}
-	return t
-}
-
-func tetraToTime(t [4]byte) time.Time {
-	i := tetraToInt(t)
-	return time.Unix(i, 0)
-}
-
-func tetraToFileMode(t [4]byte) os.FileMode {
-	i := tetraToInt(t)
-	return os.FileMode(i)
-}
-
-func tetraToString(t [4]byte) string {
-	return string(t[:])
-}
-
-func hexTetraToInt(t [4]byte) int {
-	i, _ := strconv.ParseUint(string(t[:]), 16, 32)
-	return int(i)
-}
-
-func tetraToInt(t [4]byte) int64 {
-	var i uint32
-	for j := range t {
-		i |= uint32(t[j]) << uint(j*8)
+	buf := make([]byte, len(status)+4+len(msg))
+	buf = append(buf, status...)
+	binary.LittleEndian.PutUint32(buf, uint32(len(msg)))
+	buf = append(buf, msg...)
+	n, err := w.Write(buf)
+	if err != nil {
+		return err
 	}
-	return int64(i)
+	if n != len(msg)+4 {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+// wantStatus errors when the connection responds with a different status
+// than status. If 'FAIL' is reportet the returned error will carry the
+// error given by the server.
+// When acceptStatus is left empty defaults to statusOK
+func wantStatus(r io.Reader, acceptStatus ...string) error {
+	buf := make([]byte, 4)
+	_, err := io.ReadFull(r, buf)
+	if err != nil {
+		return err
+	}
+	s := string(buf)
+
+	if s == statusFail {
+		_, err = io.ReadFull(r, buf)
+		if err != nil {
+			return err
+		}
+		length := binary.LittleEndian.Uint32(buf)
+		errMsg := make([]byte, length)
+		_, err := io.ReadFull(r, errMsg)
+		if err != nil {
+			return err
+		}
+		return errors.New(string(errMsg))
+	}
+
+	if len(acceptStatus) == 0 {
+		if s != statusOK {
+			return &UnexpectedStatusError{acceptStatus, s}
+		}
+	} else {
+		success := false
+		for _, status := range acceptStatus {
+			if s == status {
+				success = true
+				break
+			}
+		}
+		if !success {
+			return &UnexpectedStatusError{acceptStatus, s}
+		}
+	}
+	return nil
+}
+
+// readString reads a message from r and returns it as a string.
+// It will report an error for any status code that is not listed
+// in acceptStatus or if none supplied 'OKAY'.
+func readBytes(r io.Reader, acceptStatus ...string) ([]byte, error) {
+	head := make([]byte, 8)
+	_, err := io.ReadFull(r, head)
+	if err != nil {
+		return nil, err
+	}
+	status := string(head[:4])
+
+	if status == statusFail {
+		buf := make([]byte, binary.LittleEndian.Uint32(head[4:]))
+		_, err := io.ReadFull(r, buf)
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New(string(buf))
+	}
+
+	if len(acceptStatus) == 0 {
+		if status != statusOK {
+			return nil, &UnexpectedStatusError{acceptStatus, status}
+		}
+	} else {
+		ok := false
+		for _, s := range acceptStatus {
+			if s == status {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, &UnexpectedStatusError{acceptStatus, status}
+		}
+	}
+	buf := make([]byte, binary.LittleEndian.Uint32(head[4:]))
+	_, err = io.ReadFull(r, buf)
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
 }

@@ -1,32 +1,46 @@
 package adb
 
 import (
-	"fmt"
+	"encoding/binary"
 	"io"
-	"os"
 	"time"
 
 	"github.com/pkg/errors"
 )
 
+/*
+Remove this. This is a bad/unessecarry abstraction. Use something like
+WriteFile(string, io.Reader) instead.
+
+And close method can be omitted!
+
+This has less types, less state, better composition.
+It can be easily transformed into an io.Reader or better io.WriterTo via
+a closure and a wrapper.
+
+Example:
+    type WriterFunc func([]byte) (int, error)
+
+    func (wf WriterFunc) Write(b []byte) (int, error) {
+        return wf(b)
+    }
+
+    var F WriterFunc = func(b []byte) (int, error) {
+        return d.WriteFile("myfile", bytes.NewBuffer(b))
+    }
+*/
+
 // syncFileWriter wraps a SyncConn that has requested to send a file.
 type syncFileWriter struct {
 	// The modification time to write in the footer.
 	// If 0, use the current time.
-	mtime time.Time
+	modTime time.Time
 
 	// Reader used to read data from the adb connection.
 	sender io.WriteCloser
 }
 
 var _ io.WriteCloser = &syncFileWriter{}
-
-func newSyncFileWriter(s io.WriteCloser, mtime time.Time) io.WriteCloser {
-	return &syncFileWriter{
-		mtime:  mtime,
-		sender: s,
-	}
-}
 
 /*
 encodePathAndMode encodes a path and file mode as required for starting a send file stream.
@@ -36,9 +50,6 @@ From https://android.googlesource.com/platform/system/core/+/master/adb/SYNC.TXT
 	comma (","). The first part is the actual path, while the second is a decimal
 	encoded file mode containing the permissions of the file on device.
 */
-func encodePathAndMode(path string, mode os.FileMode) []byte {
-	return []byte(fmt.Sprintf("%s,%d", path, uint32(mode.Perm())))
-}
 
 // Write writes the min of (len(buf), 64k).
 func (w *syncFileWriter) Write(buf []byte) (n int, err error) {
@@ -51,34 +62,48 @@ func (w *syncFileWriter) Write(buf []byte) (n int, err error) {
 		// If buffer is larger than the max, we'll return the max size and leave it up to the
 		// caller to handle correctly.
 		partialBuf := buf
-		if len(partialBuf) > SyncMaxChunkSize {
-			partialBuf = partialBuf[:SyncMaxChunkSize]
+		if len(partialBuf) > syncMaxChunkSize {
+			partialBuf = partialBuf[:syncMaxChunkSize]
 		}
 
-		if err := sendStatus(w, StatusSyncData); err != nil {
+		if _, err := w.Write([]byte(statusSyncData)); err != nil {
 			return written, err
 		}
-		if _, err := sendMessage(w.sender, string(partialBuf)); err != nil {
+		// correct?
+		length := make([]byte, 4)
+		binary.LittleEndian.PutUint32(length, uint32(len(partialBuf)))
+		if _, err := w.sender.Write(length[:]); err != nil {
 			return written, err
+		}
+		n, err := w.sender.Write(partialBuf)
+		if err != nil {
+			return written + n, err
 		}
 
-		written += len(partialBuf)
-		buf = buf[len(partialBuf):]
+		written += n
+		buf = buf[n:]
 	}
 
 	return written, nil
 }
 
-func (w *syncFileWriter) Close() error {
-	if w.mtime.IsZero() {
-		w.mtime = time.Now()
-	}
+// TODO(jmh): implement
+func (w *syncFileWriter) ReadFrom(r io.Reader) (int64, error) {
+	return 0, ErrNotImplemented
+}
 
-	if err := sendStatus(w.sender, StatusSyncDone); err != nil {
-		return errors.Wrap(err, "error sending done chunk to close stream")
+func (w *syncFileWriter) Close() error {
+	if w.modTime == (time.Time{}) {
+		w.modTime = time.Now()
 	}
-	if err := sendTime(w.sender, w.mtime); err != nil {
-		return errors.Wrap(err, "error writing file modification time")
+	// cancelation check?
+
+	buf := make([]byte, 8)
+	copy(buf[:4], statusSyncDone)
+	binary.LittleEndian.PutUint32(buf[4:], uint32(w.modTime.Unix()))
+	_, err := w.sender.Write(buf)
+	if err != nil {
+		return err
 	}
 	return errors.WithMessage(w.sender.Close(), "error closing FileWriter")
 }

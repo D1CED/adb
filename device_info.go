@@ -8,13 +8,16 @@ import (
 	"github.com/pkg/errors"
 )
 
+// change this to not use maps!
+// map allocation in loop bad!!!
+
 type DeviceInfo struct {
 	// Must be always set.
 	Serial string
 	// Product, device, and model are not set in the short form.
-	Product    string
-	Model      string
-	DeviceInfo string
+	Product string
+	Model   string
+	Device  string
 	// Only set for devices connected via USB.
 	USB string
 }
@@ -24,21 +27,22 @@ func newDevice(serial string, attrs map[string]string) (DeviceInfo, error) {
 		return DeviceInfo{}, errors.Wrap(ErrAssertionViolation, "device serial cannot be blank")
 	}
 	return DeviceInfo{
-		Serial:     serial,
-		Product:    attrs["product"],
-		Model:      attrs["model"],
-		DeviceInfo: attrs["device"],
-		USB:        attrs["usb"],
+		Serial:  serial,
+		Product: attrs["product"],
+		Model:   attrs["model"],
+		Device:  attrs["device"],
+		USB:     attrs["usb"],
 	}, nil
 }
 
 // IsUSB returns true if the device is connected via USB.
+// remove?
 func (d DeviceInfo) IsUSB() bool {
 	return d.USB != ""
 }
 
 func parseDeviceList(list io.Reader, lineParseFunc func(string) (DeviceInfo, error)) ([]DeviceInfo, error) {
-	devices := []DeviceInfo{}
+	devices := make([]DeviceInfo, 0, 5)
 	scanner := bufio.NewScanner(list)
 
 	for scanner.Scan() {
@@ -55,7 +59,7 @@ func parseDeviceList(list io.Reader, lineParseFunc func(string) (DeviceInfo, err
 func parseDeviceShort(line string) (DeviceInfo, error) {
 	fields := strings.Fields(line)
 	if len(fields) != 2 {
-		return DeviceInfo{}, errors.Wrapf(ErrParsing,
+		return DeviceInfo{}, errors.Errorf(
 			"malformed device line, expected 2 fields but found %d", len(fields))
 	}
 	return newDevice(fields[0], map[string]string{})
@@ -64,27 +68,16 @@ func parseDeviceShort(line string) (DeviceInfo, error) {
 func parseDeviceLong(line string) (DeviceInfo, error) {
 	fields := strings.Fields(line)
 	if len(fields) < 5 {
-		return DeviceInfo{}, errors.Wrapf(ErrParsing,
+		return DeviceInfo{}, errors.Errorf(
 			"malformed device line, expected at least 5 fields but found %d", len(fields))
 	}
-	attrs := parseDeviceAttributes(fields[2:])
+	attrs := make(map[string]string)
+	for _, field := range fields[2:] {
+		split := strings.Split(field, ":")
+		if len(split) != 2 {
+			continue
+		}
+		attrs[split[0]] = split[1]
+	}
 	return newDevice(fields[0], attrs)
-}
-
-func parseDeviceAttributes(fields []string) map[string]string {
-	attrs := map[string]string{}
-	for _, field := range fields {
-		key, val := parseKeyVal(field)
-		attrs[key] = val
-	}
-	return attrs
-}
-
-// Parses a key:val pair and returns key, val.
-func parseKeyVal(pair string) (string, string) {
-	split := strings.Split(pair, ":")
-	if len(split) != 2 {
-		return "", ""
-	}
-	return split[0], split[1]
 }

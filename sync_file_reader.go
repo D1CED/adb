@@ -1,9 +1,8 @@
 package adb
 
 import (
+	"encoding/binary"
 	"io"
-
-	"github.com/pkg/errors"
 )
 
 // syncFileReader wraps a SyncConn that has requested to receive a file.
@@ -18,28 +17,20 @@ type syncFileReader struct {
 	eof bool
 }
 
-var _ io.ReadCloser = &syncFileReader{}
-
-func newSyncFileReader(s io.ReadCloser) (r io.ReadCloser, err error) {
-	r = &syncFileReader{
-		scanner: s,
-	}
-
+func newSyncFileReader(s io.ReadCloser) (io.ReadCloser, error) {
+	r := &syncFileReader{scanner: s}
 	// Read the header for the first chunk to consume any errors.
-	if _, err = r.Read([]byte{}); err != nil {
-		if err == io.EOF {
-			// EOF means the file was empty. This still means the file was opened successfully,
-			// and the next time the caller does a read they'll get the EOF and handle it themselves.
-			err = nil
-		} else {
-			r.Close()
-			return nil, err
-		}
+	_, err := r.Read([]byte{})
+	// EOF means the file was empty. This still means the file was opened successfully,
+	// and the next time the caller does a read they'll get the EOF and handle it themselves.
+	if err != nil && err != io.EOF {
+		r.Close()
+		return nil, err
 	}
-	return
+	return r, nil
 }
 
-func (r *syncFileReader) Read(buf []byte) (n int, err error) {
+func (r *syncFileReader) Read(buf []byte) (int, error) {
 	if r.eof {
 		return 0, io.EOF
 	}
@@ -63,14 +54,13 @@ func (r *syncFileReader) Read(buf []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	n, err = r.chunkReader.Read(buf)
+	n, err := r.chunkReader.Read(buf)
 	if err == io.EOF {
 		// End of current chunk, don't return an error, the next chunk will be
 		// read on the next call to this method.
 		r.chunkReader = nil
 		return n, nil
 	}
-
 	return n, err
 }
 
@@ -81,28 +71,20 @@ func (r *syncFileReader) Close() error {
 // readNextChunk creates an io.LimitedReader for the next chunk of data,
 // and returns io.EOF if the last chunk has been read.
 func readNextChunk(r io.Reader) (io.Reader, error) {
-	t, err := readTetra(r)
-	if err != nil {
-		if errors.Cause(err) == ErrFileNotExist {
-			return nil, errors.Wrap(ErrFileNotExist, "no such file or directory")
-		}
-		return nil, err
-	}
-	status := tetraToString(t)
-
-	switch status {
-	case StatusSyncData:
-		return r, nil
-	case StatusSyncDone:
+	buf := make([]byte, 8)
+	n, err := io.ReadFull(r, buf)
+	status := string(buf[:4])
+	if err == io.ErrUnexpectedEOF && n == 4 && status == statusSyncDone {
 		return nil, io.EOF
-	default:
-		return nil, errors.Wrapf(ErrAssertionViolation, "expected chunk id '%s' or '%s', but got '%s'",
-			StatusSyncData, StatusSyncDone, status)
+	} else if err != nil {
+		return nil, err
+	} else if status != statusSyncData {
+		return nil, &UnexpectedStatusError{[]string{statusSyncDone, statusSyncData}, status}
 	}
+	length := binary.LittleEndian.Uint32(buf[4:])
+	return &io.LimitedReader{r, int64(length)}, nil
 }
 
-// readFileNotFoundPredicate returns true if s is the adb server error message returned
-// when trying to open a file that doesn't exist.
-func readFileNotFoundPredicate(s string) bool {
-	return s == "No such file or directory"
-}
+// readFileNotFoundPredicate returns true if s is the adb server error message
+// returned when trying to open a file that doesn't exist.
+const readFileNotFoundPredicate = "No such file or directory"

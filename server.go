@@ -2,12 +2,9 @@ package adb
 
 import (
 	"bytes"
-	"fmt"
-	"io"
 	"net"
 	"os/exec"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -18,20 +15,23 @@ const (
 	DefaultExecutableName = "adb"
 	// DefaultPort is the default port for the ADB-Server to listens on.
 	DefaultPort = 5037
+
+	// use statusOK
+	statusSuccess string = "OKAY"
+	// use statusFail
+	statusFailure string = "FAIL"
 )
+
+// dialer used to connect to the adb server.
+// Default is the regular Dialer form net.
+// This exist only for easier mocking.
+var dial = func(address string) (net.Conn, error) { return net.Dial("tcp", address) }
 
 // Server holds information needed to connect to a server repeatedly.
 // Use New or NewDefault to create one.
 type Server struct {
 	path    string
 	address string
-
-	conn net.Conn
-
-	// dialer used to connect to the adb server.
-	// Default is the regular Dialer form net.
-	// This exist only for easier mocking.
-	dial func(network, address string) (net.Conn, error)
 }
 
 // NewDefault creates a new Adb client that uses the default ServerConfig.
@@ -44,137 +44,90 @@ func New(path, host string, port int) (*Server, error) {
 	// maybe add path search for adb?
 	s := &Server{
 		path:    path,
-		address: fmt.Sprintf("%s:%d", host, port),
-		dial:    net.Dial,
+		address: host + ":" + strconv.Itoa(port),
 	}
-	err := s.start()
+	err := start(s)
 	if err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-func (s *Server) start() error {
+func start(s *Server) error {
 	out, err := exec.Command(s.path, "start-server").CombinedOutput()
 	return errors.WithMessagef(err, "error starting server. Output:\n%s", out)
 }
 
-// requestResponse sends msg to server and writes the result into w.
-// The connection is closed.
-func (s *Server) requestResponse(msg string, w io.Writer) (int64, error) {
-	conn, err := s.dial("tcp", s.address)
+// requestResponseBytes sends msg to server and returns the response.
+// The connection is closed. It prepends "host:" to the message.
+// The connection times out after 10 seconds.
+func (s *Server) requestResponseBytes(msg string) ([]byte, error) {
+	conn, err := dial(s.address)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	_, err = sendMessage(conn, msg)
+
+	err = sendMessage(conn, "host:", msg)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	err = readStatus(conn)
-	if err != nil {
-		return 0, err
-	}
-	t, err := readTetra(conn)
-	if err != nil {
-		return 0, err
-	}
-	length := hexTetraToInt(t)
-	return io.CopyN(w, conn, int64(length))
+
+	return readBytes(conn)
 }
 
 // send sends msg to server reads status then closes the connection.
+// prepends 'host:'
 func (s *Server) send(msg string) error {
-	conn, err := s.dial("tcp", s.address)
+	conn, err := dial(s.address)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	_, err = sendMessage(conn, msg)
+
+	err = sendMessage(conn, "host:", msg)
 	if err != nil {
 		return err
 	}
-	return wantStatus("OKAY", conn)
-}
 
-// Opens a connection to the adb server.
-func (s *Server) openConn() error {
-	conn, err := s.dial("tcp", s.address)
-	if err != nil {
-		return err
-	}
-	s.conn = conn
-	return nil
-}
-
-func (s *Server) Close() error {
-	if s.conn == nil {
-		return nil
-	}
-	return s.conn.Close()
+	return wantStatus(conn)
 }
 
 // Version asks the adb server for its internal version number.
+// TODO(jmh): Check server version format
 func (s *Server) Version() (int, error) {
-	// TODO(JMH): Check server version format
-	var parseVersion = func(versionStr string) (int, error) {
-		version, err := strconv.ParseInt(versionStr, 16, 32)
-		if err != nil {
-			return 0, errors.Wrapf(err, "error parsing server version: %s", versionStr)
-		}
-		return int(version), nil
+	b, err := s.requestResponseBytes("version")
+	if err != nil {
+		return 0, err
 	}
 
-	b := &strings.Builder{}
-	_, err := s.requestResponse("host:version", b)
-	if err != nil {
-		return 0, err
-	}
-	v, err := parseVersion(b.String())
-	if err != nil {
-		return 0, err
-	}
-	return v, nil
+	v, _ := strconv.ParseInt(string(b), 16, 32)
+	return int(v), nil
 }
 
 // Kill tells the server to quit immediately.
-//
-// Corresponds to the command:
-//     adb kill-server
 func (s *Server) Kill() error {
-	return s.send("host:kill")
+	return s.send("kill")
 }
 
 // ListDevices returns the list of connected devices.
-//
-// Corresponds to the command:
-//     adb devices -l
 func (s *Server) ListDevices() ([]DeviceInfo, error) {
-	b := &bytes.Buffer{}
-	_, err := s.requestResponse("host:devices-l", b)
+	b, err := s.requestResponseBytes("devices-l")
 	if err != nil {
 		return nil, err
 	}
-	devices, err := parseDeviceList(b, parseDeviceLong)
-	if err != nil {
-		return nil, err
-	}
-	return devices, nil
+	return parseDeviceList(bytes.NewBuffer(b), parseDeviceLong)
 }
 
 // ListDeviceSerials returns the serial numbers of all attached devices.
-//
-// Corresponds to the command:
-//     adb devices
 func (s *Server) ListDeviceSerials() ([]string, error) {
-	b := &bytes.Buffer{}
-	_, err := s.requestResponse("host:devices", b)
+	b, err := s.requestResponseBytes("devices")
 	if err != nil {
 		return nil, err
 	}
-	devices, err := parseDeviceList(b, parseDeviceShort)
+	devices, err := parseDeviceList(bytes.NewBuffer(b), parseDeviceShort)
 	if err != nil {
 		return nil, err
 	}
@@ -186,25 +139,13 @@ func (s *Server) ListDeviceSerials() ([]string, error) {
 	return serials, nil
 }
 
-func (s *Server) Device(d DeviceDescriptor) *Device {
+func (s *Server) Device(serial string) *Device {
 	return &Device{
-		server:     &(*s),
-		descriptor: d,
+		server: &(*s), // copy server
+		serial: serial,
 	}
 }
 
-func (s *Server) NewDeviceWatcher() *DeviceWatcher {
+func (s *Server) NewDeviceWatcher() (*DeviceWatcher, error) {
 	return newDeviceWatcher(s)
-}
-
-// marked for removal. Use Server.requestResponse.
-func roundTripSingleResponse(s *Server, req string) ([]byte, error) {
-	b := &bytes.Buffer{}
-	_, err := s.requestResponse(req, b)
-	return b.Bytes(), err
-}
-
-// marked for removal. Use Server.send.
-func roundTripSingleNoResponse(s *Server, req string) error {
-	return s.send(req)
 }
