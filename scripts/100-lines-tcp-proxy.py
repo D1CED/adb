@@ -10,23 +10,20 @@ import sys
 
 # Changing the buffer_size and delay, you can improve the speed and bandwidth.
 # But when buffer get to high or delay go too down, you can broke things
-buffer_size = 4096
-delay = 0.0001
+buffer_size = 4 * 2**10
+delay = 1e-5
 forward_to = ('127.0.0.1', 5037)
 #forward_to = ('10.249.80.122', 57149)
 
 
-class Forward:
-    def __init__(self):
-        self.forward = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    def start(self, host, port):
-        try:
-            self.forward.connect((host, port))
-            return self.forward
-        except Exception as e:
-            print(e)
-            return False
+def forward_start(host, port):
+    forward = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        forward.connect((host, port))
+        return forward
+    except Exception as e:
+        print(e)
+        return False
 
 
 class TheServer:
@@ -58,7 +55,7 @@ class TheServer:
                     self.on_recv()
 
     def on_accept(self):
-        forward = Forward().start(forward_to[0], forward_to[1])
+        forward = forward_start(forward_to[0], forward_to[1])
         clientsock, clientaddr = self.server.accept()
         if forward:
             print('[proxy]', clientaddr, "has connected")
@@ -91,7 +88,7 @@ class TheServer:
         data = self.data
         # here we can parse and/or modify the data before send forward
         #print(isinstance(self.s, Forward), self.server)
-        print("[%5s]: %s".format(self.s.getpeername()[1], data))
+        print("[{:05}]: {}".format(self.s.getpeername()[1], data))
         self.channel[self.s].send(data)
 
 

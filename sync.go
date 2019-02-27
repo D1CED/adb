@@ -45,8 +45,8 @@ func readStat(r io.Reader) (DirEntry, error) {
 		return DirEntry{}, ErrFileNotExist
 	}
 	return DirEntry{
-		Mode:       mode,
-		Size:       size,
+		FMode:      mode,
+		FSize:      size,
 		ModifiedAt: mtime,
 	}, nil
 }

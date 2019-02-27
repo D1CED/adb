@@ -139,6 +139,7 @@ func (s *Server) ListDeviceSerials() ([]string, error) {
 	return serials, nil
 }
 
+// Device takes a devices serial number and returns it.
 func (s *Server) Device(serial string) *Device {
 	return &Device{
 		server: &(*s), // copy server
@@ -146,6 +147,7 @@ func (s *Server) Device(serial string) *Device {
 	}
 }
 
+// NewDeviceWatcher starts a new device watcher.
 func (s *Server) NewDeviceWatcher() (*DeviceWatcher, error) {
 	return newDeviceWatcher(s)
 }

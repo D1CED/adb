@@ -4,18 +4,44 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
+	"path"
 	"time"
 
 	"github.com/pkg/errors"
 )
 
 // DirEntry holds information about a directory entry on a device.
-// TODO(jmh): implement os.FileInfo for this.
 type DirEntry struct {
-	Name       string
-	Mode       os.FileMode
-	Size       uint32
+	FName      string
+	FMode      os.FileMode
+	FSize      uint32
 	ModifiedAt time.Time
+}
+
+var _ os.FileInfo = DirEntry{}
+
+func (de DirEntry) IsDir() bool {
+	return de.FMode.IsDir()
+}
+
+func (de DirEntry) ModTime() time.Time {
+	return de.ModifiedAt
+}
+
+func (de DirEntry) Mode() os.FileMode {
+	return de.FMode
+}
+
+func (de DirEntry) Name() string {
+	return path.Base(de.FName)
+}
+
+func (de DirEntry) Size() int64 {
+	return int64(de.FSize)
+}
+
+func (de DirEntry) Sys() interface{} {
+	return nil
 }
 
 // ReadAllDirEntries reads directory entries into a slice,
@@ -65,9 +91,9 @@ func readNextDirListEntry(r io.Reader) (DirEntry, error) {
 	}
 
 	return DirEntry{
-		Name:       string(body),
-		Mode:       mode,
-		Size:       size,
+		FName:      string(body),
+		FMode:      mode,
+		FSize:      size,
 		ModifiedAt: time,
 	}, nil
 }

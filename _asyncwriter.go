@@ -75,6 +75,7 @@ func (aw *AsyncWriter) readFrom(r io.Reader) {
 		}
 	}()
 	buf := make([]byte, 16*1024)
+outer:
 	for {
 		select {
 		case <-aw.cancel:
@@ -88,18 +89,18 @@ func (aw *AsyncWriter) readFrom(r io.Reader) {
 				}
 				if ew != nil {
 					aw.err.Store(ew)
-					break
+					break outer
 				}
 				if nr != nw {
 					aw.err.Store(io.ErrShortWrite)
-					break
+					break outer
 				}
 			}
 			if er != nil {
 				if er != io.EOF {
 					aw.err.Store(er)
 				}
-				break
+				break outer
 			}
 		}
 	}

@@ -38,7 +38,7 @@ func (d *Device) ListProcesses() ([]Process, error) {
 	var (
 		fieldNames []string
 		bufrd      = bufio.NewReader(d.server.conn)
-		pp         = make([]Process, 0, 10)
+		pp         = make([]Process, 0, 4)
 	)
 
 	for {

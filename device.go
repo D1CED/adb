@@ -18,52 +18,15 @@ func (d *Device) String() string {
 	return s
 }
 
-/*
-// openConn switches the connection to communicate directly with the device
-// by requesting the transport defined by the DeviceDescriptor.
-func (d *Device) openConn() error {
-	// or maybe close and reopen?
-	if d.server.conn != nil {
-		return nil
-	}
-	err := d.server.openConn()
-	if err != nil {
-		return err
-	}
-	err = sendMessage(d.server.conn, "host:transport:", d.serial)
-	if err != nil {
-		d.server.Close()
-		return errors.Wrapf(err, "error connecting to device '%s'", d.serial)
-	}
-	if err = wantStatus("OKAY", d.server.conn); err != nil {
-		d.server.Close()
-		return err
-	}
-	return nil
-}
-
-func (d *Device) openSyncConn() error {
-	if d.server.conn == nil {
-		err := d.server.openConn()
-		if err != nil {
-			return err
-		}
-	}
-
-	// Switch the connection to sync mode.
-	err := sendMessage(d.server.conn, "sync:", "")
-	if err != nil {
-		return err
-	}
-	return wantStatus("OKAY", d.server.conn)
-}
-*/
-
 // getAttribute returns the message send by the server when requesting
 // <host-prefix>:<attr>, where host-prefix is d.
 func (d *Device) requestResponseString(attr string) (string, error) {
 	b, err := d.server.requestResponseBytes("host-serial:" + d.serial + ":" + attr)
 	return string(b), errors.WithMessage(err, "getAttribute")
+}
+
+func (d *Device) send(attr string) error {
+	return d.server.send("host-serial:" + d.serial + ":" + attr)
 }
 
 // get-product is documented, but not implemented, in the server.

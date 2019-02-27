@@ -1,6 +1,8 @@
 package adb
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"math/rand"
@@ -31,13 +33,18 @@ const (
 )
 
 func parseDeviceState(str string) DeviceState {
-	var deviceStateStrings = map[string]DeviceState{
-		"":             StateDisconnected,
-		"offline":      StateOffline,
-		"device":       StateOnline,
-		"unauthorized": StateUnauthorized,
+	switch str {
+	case "":
+		return StateDisconnected
+	case "offline":
+		return StateOffline
+	case "device":
+		return StateOnline
+	case "unauthorized":
+		return StateUnauthorized
+	default:
+		return StateInvalid
 	}
-	return deviceStateStrings[str]
 }
 
 // DeviceStateChangedEvent represents a device state transition.
@@ -50,13 +57,13 @@ type DeviceStateChangedEvent struct {
 }
 
 // CameOnline returns true if this event represents a device coming online.
-func (s DeviceStateChangedEvent) CameOnline() bool {
-	return s.OldState != StateOnline && s.NewState == StateOnline
+func (e DeviceStateChangedEvent) CameOnline() bool {
+	return e.OldState != StateOnline && e.NewState == StateOnline
 }
 
 // WentOffline returns true if this event represents a device going offline.
-func (s DeviceStateChangedEvent) WentOffline() bool {
-	return s.OldState == StateOnline && s.NewState != StateOnline
+func (e DeviceStateChangedEvent) WentOffline() bool {
+	return e.OldState == StateOnline && e.NewState != StateOnline
 }
 
 // DeviceWatcher publishes device status change events.
@@ -70,6 +77,8 @@ type DeviceWatcher struct {
 	err atomic.Value
 
 	eventChan chan DeviceStateChangedEvent
+
+	cancel chan struct{}
 }
 
 func newDeviceWatcher(s *Server) (*DeviceWatcher, error) {
@@ -90,6 +99,7 @@ func newDeviceWatcher(s *Server) (*DeviceWatcher, error) {
 	watcher := &DeviceWatcher{
 		server:    s,
 		eventChan: make(chan DeviceStateChangedEvent),
+		cancel:    make(chan struct{}),
 		conn:      conn,
 	}
 	// runtime.SetFinalizer(watcher, func(watcher *DeviceWatcher) { watcher.Shutdown() })
@@ -106,43 +116,24 @@ func (w *DeviceWatcher) C() <-chan DeviceStateChangedEvent {
 // Err returns the error that caused the channel returned by C to be closed,
 // if C is closed. If C is not closed, its return value is undefined.
 func (w *DeviceWatcher) Err() error {
-	if err, ok := w.err.Load().(error); ok {
-		return err
-	}
-	return nil
+	err, _ := w.err.Load().(error)
+	return err
 }
 
 // Shutdown stops the watcher from listening for events and closes the channel
 // returned from C.
-// TODO(z): Implement.
 func (w *DeviceWatcher) Shutdown() {
+	close(w.cancel)
 }
 
-/*
-publishDevices reads device lists from scanner, calculates diffs, and publishes
-events on eventChan.
-Returns when scanner returns an error.
-Doesn't refer directly to a *DeviceWatcher so it can be GCed (which will, in
-turn, close Scanner and stop this goroutine).
-
-TODO(z): to support shutdown, spawn a new goroutine each time a server connection
-is established. This goroutine should read messages and send them to a
-message channel. Can write errors directly to errVal. publishDevicesUntilError
-should take the msg chan and the scanner and select on the msg chan and stop
-chan, and if the stop chan sends, close the scanner and return true.
-If the msg chan closes, just return false. publishDevices can look at ret val:
-if false and err == EOF, reconnect. If false and other error, report err and
-abort. If true, report no error and stop.
-
-EDIT(jmh): Will recursively restart. Revisit this.
-*/
+// EDIT(jmh): Will recursively restart. Revisit this.
 func publishDevices(watcher *DeviceWatcher) {
 	defer close(watcher.eventChan)
 
 	// pre do it for no async mess
 	defer watcher.conn.Close()
 
-	err := publishDevicesUntilError(watcher.conn, watcher.eventChan)
+	err := publishDevicesUntilError(watcher.conn, watcher.eventChan, watcher.cancel)
 
 	if errors.Cause(err) == ErrConnectionReset {
 		// The server died, restart and reconnect.
@@ -165,66 +156,66 @@ func publishDevices(watcher *DeviceWatcher) {
 	}
 }
 
-func publishDevicesUntilError(r io.Reader, eventChan chan<- DeviceStateChangedEvent) error {
+func publishDevicesUntilError(r io.Reader, eventChan chan<- DeviceStateChangedEvent, cancel <-chan struct{}) error {
 	lastState := make(map[string]DeviceState)
+	devState := make([]serialDeviceState, 0, 8)
 	for {
+		select {
+		case <-cancel:
+			close(eventChan)
+			return nil
+		default:
+		}
 		msg, err := readBytes(r)
 		if err != nil {
 			return err
 		}
-		deviceStates, err := parseDeviceStates(string(msg))
-		if err != nil {
-			return err
-		}
-		for _, event := range calculateStateDiffs(lastState, deviceStates) {
-			eventChan <- event
-		}
-		lastState = deviceStates
+		deviceStates := parseDeviceStates(bytes.NewReader(msg), devState)
+		calculateStateDiffs(deviceStates, lastState, eventChan)
 	}
 }
 
-func parseDeviceStates(msg string) (map[string]DeviceState, error) {
-	// PERF(jmh): change this to slice, don't allocate map in loop!
-	// maybe pass it in as argument.
-	// use io.Reader instead of string for further optimizations.
-	states := make(map[string]DeviceState)
-	for lineNum, line := range strings.Split(msg, "\n") {
-		if len(line) == 0 {
-			continue
-		}
+type serialDeviceState struct {
+	serial string
+	state  DeviceState
+}
+
+// for even fewer allocations take sdss as pointer to slice so that enlargments
+// propagate
+func parseDeviceStates(r io.Reader, sdss []serialDeviceState) []serialDeviceState {
+	sdss = sdss[0:0:cap(sdss)]
+	scan := bufio.NewScanner(r)
+
+	for scan.Scan() {
+		line := scan.Text()
+
 		fields := strings.Split(line, "\t")
 		if len(fields) != 2 {
-			return nil, errors.Errorf("invalid device state line %d: %s", lineNum, line)
+			continue
 		}
 		serial, stateString := fields[0], fields[1]
 		state := parseDeviceState(stateString)
-		states[serial] = state
+		sdss = append(sdss, serialDeviceState{serial, state})
 	}
-	return states, nil
+	return sdss
 }
 
-func calculateStateDiffs(oldStates, newStates map[string]DeviceState) []DeviceStateChangedEvent {
-	events := make([]DeviceStateChangedEvent, 0, len(newStates))
-	for serial, oldState := range oldStates {
-		newState, ok := newStates[serial]
+func calculateStateDiffs(
+	lastState []serialDeviceState,
+	deviceStates map[string]DeviceState,
+	ch chan<- DeviceStateChangedEvent) {
 
-		if oldState != newState {
-			if ok {
-				// Device present in both lists: state changed.
-				events = append(events, DeviceStateChangedEvent{serial, oldState, newState})
-			} else {
-				// Device only present in old list: device removed.
-				events = append(events, DeviceStateChangedEvent{serial, oldState, StateDisconnected})
+	for _, sta := range lastState {
+		if old := deviceStates[sta.serial]; sta.state != old {
+			ch <- DeviceStateChangedEvent{
+				Serial:   sta.serial,
+				OldState: old,
+				NewState: sta.state,
 			}
+			deviceStates[sta.serial] = sta.state
 		}
 	}
-
-	for serial, newState := range newStates {
-		if _, ok := oldStates[serial]; !ok {
-			// Device only present in new list: device added.
-			events = append(events, DeviceStateChangedEvent{serial, StateDisconnected, newState})
-		}
-	}
-
-	return events
+	// check opposite case
+	// what fields are in map but not in slice
+	// send event and delete from map
 }

@@ -15,12 +15,18 @@ overkill so I replaced all of it simply with github.com/pkg/errors.
 Return parameters were used in some places, I removed them for the most
 part. In a lot of places strings or []bytes where used when io.Readers
 would made more sense. I made use of io.Copy in some places one of the
-most important functions in Go IMO. -->
+most important functions in Go IMO.
+
+A quick note about finalizers and goroutines:
+If you start a gorutine and a reference to an object lives on its stack
+the object will never be deallocated so the finalizer will never be run.
+*Again do not use finalizers!*
+-->
 
 The only thing I'm currently sorry about is that I ripped out all tests.
 The package was designed with a TDD approach, at least I think so and
 use of small unittest was common. I favour table driven tests as they are more
-idiomatic in Go so the next thing to do is to add them back.
+idiomatic in Go so the next step is to add them back.
 
 If you are looking for a propper adb client library in Go, take a look
 a the implementation provided by Google.
@@ -64,15 +70,18 @@ socket read/writes
   - investigate if write full neccessary
   - reduce allocations for message sends
 clean-up io
+change ForwartSpec to a simple string
+implement os.FileInfo for dir_entries
+device info remove map allocations
+device watcher implement shutdown
+device watcher map allocation in loop
 
 ## TODO:
-device info remove map allocations
-implement os.FileInfo for dir_entries
 think about features of device_extra (what to keep/remove?)
-
 write more tests (table driven style)
-track leakages
+track (potential) leakages
 move cmd/demo and cmd/raw-adb to example files
+fix device watcher 'calculateStateDiffs'
 
 Notice About hierarchy flattening:
 See: https://github.com/golang/go/wiki/CodeReviewComments#interfaces

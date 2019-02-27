@@ -8,9 +8,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-// change this to not use maps!
-// map allocation in loop bad!!!
-
 type DeviceInfo struct {
 	// Must be always set.
 	Serial string
@@ -22,19 +19,6 @@ type DeviceInfo struct {
 	USB string
 }
 
-func newDevice(serial string, attrs map[string]string) (DeviceInfo, error) {
-	if serial == "" {
-		return DeviceInfo{}, errors.Wrap(ErrAssertionViolation, "device serial cannot be blank")
-	}
-	return DeviceInfo{
-		Serial:  serial,
-		Product: attrs["product"],
-		Model:   attrs["model"],
-		Device:  attrs["device"],
-		USB:     attrs["usb"],
-	}, nil
-}
-
 // IsUSB returns true if the device is connected via USB.
 // remove?
 func (d DeviceInfo) IsUSB() bool {
@@ -42,7 +26,7 @@ func (d DeviceInfo) IsUSB() bool {
 }
 
 func parseDeviceList(list io.Reader, lineParseFunc func(string) (DeviceInfo, error)) ([]DeviceInfo, error) {
-	devices := make([]DeviceInfo, 0, 5)
+	devices := make([]DeviceInfo, 0, 4)
 	scanner := bufio.NewScanner(list)
 
 	for scanner.Scan() {
@@ -62,7 +46,7 @@ func parseDeviceShort(line string) (DeviceInfo, error) {
 		return DeviceInfo{}, errors.Errorf(
 			"malformed device line, expected 2 fields but found %d", len(fields))
 	}
-	return newDevice(fields[0], map[string]string{})
+	return DeviceInfo{Serial: fields[0]}, nil
 }
 
 func parseDeviceLong(line string) (DeviceInfo, error) {
@@ -71,13 +55,22 @@ func parseDeviceLong(line string) (DeviceInfo, error) {
 		return DeviceInfo{}, errors.Errorf(
 			"malformed device line, expected at least 5 fields but found %d", len(fields))
 	}
-	attrs := make(map[string]string)
+	di := DeviceInfo{Serial: fields[0]}
 	for _, field := range fields[2:] {
 		split := strings.Split(field, ":")
 		if len(split) != 2 {
 			continue
 		}
-		attrs[split[0]] = split[1]
+		switch s := split[1]; split[0] {
+		case "product":
+			di.Product = s
+		case "model":
+			di.Model = s
+		case "device":
+			di.Device = s
+		case "usb":
+			di.USB = s
+		}
 	}
-	return newDevice(fields[0], attrs)
+	return di, nil
 }
