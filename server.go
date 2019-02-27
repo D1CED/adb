@@ -5,7 +5,6 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
-	"time"
 
 	"github.com/pkg/errors"
 )
@@ -62,37 +61,13 @@ func start(s *Server) error {
 // The connection is closed. It prepends "host:" to the message.
 // The connection times out after 10 seconds.
 func (s *Server) requestResponseBytes(msg string) ([]byte, error) {
-	conn, err := dial(s.address)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-
-	err = sendMessage(conn, "host:", msg)
-	if err != nil {
-		return nil, err
-	}
-
-	return readBytes(conn)
+	return requestResponseBytes(s.address, "host:"+msg)
 }
 
 // send sends msg to server reads status then closes the connection.
 // prepends 'host:'
 func (s *Server) send(msg string) error {
-	conn, err := dial(s.address)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-
-	err = sendMessage(conn, "host:", msg)
-	if err != nil {
-		return err
-	}
-
-	return wantStatus(conn)
+	return send(s.address, "host:"+msg)
 }
 
 // Version asks the adb server for its internal version number.

@@ -20,38 +20,37 @@ func (d *Device) String() string {
 
 // getAttribute returns the message send by the server when requesting
 // <host-prefix>:<attr>, where host-prefix is d.
-func (d *Device) requestResponseString(attr string) (string, error) {
-	b, err := d.server.requestResponseBytes("host-serial:" + d.serial + ":" + attr)
-	return string(b), errors.WithMessage(err, "getAttribute")
+func (d *Device) requestResponseString(attr string) ([]byte, error) {
+	return requestResponseBytes(d.server.address, "host-serial:"+d.serial+":"+attr)
 }
 
 func (d *Device) send(attr string) error {
-	return d.server.send("host-serial:" + d.serial + ":" + attr)
+	return send(d.server.address, "host-serial:"+d.serial+":"+attr)
 }
 
 // get-product is documented, but not implemented, in the server.
 // TODO(z): Make product exported if get-product is ever implemented in adb.
 func (d *Device) product() (string, error) {
 	attr, err := d.requestResponseString("get-product")
-	return attr, errors.WithMessage(err, "Product")
+	return string(attr), errors.WithMessage(err, "Product")
 }
 
 // Serial returns the devices serial number.
 // unnecessary?!
 func (d *Device) Serial() (string, error) {
 	attr, err := d.requestResponseString("get-serialno")
-	return attr, errors.WithMessage(err, "Serial")
+	return string(attr), errors.WithMessage(err, "Serial")
 }
 
 // DevicePath returns the current devices path.
 func (d *Device) DevicePath() (string, error) {
 	attr, err := d.requestResponseString("get-devpath")
-	return attr, errors.WithMessage(err, "DevicePath")
+	return string(attr), errors.WithMessage(err, "DevicePath")
 }
 
 func (d *Device) State() (DeviceState, error) {
 	attr, err := d.requestResponseString("get-state")
-	state := parseDeviceState(attr)
+	state := parseDeviceState(string(attr))
 	return state, errors.WithMessage(err, "State")
 }
 

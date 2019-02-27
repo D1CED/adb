@@ -90,12 +90,7 @@ Device (new)
 - Server
   - path
   - address
-  - dialFunc
-  - net.Conn (interface)
-    - net.Addr (interface)
-- DeviceDescriptor
-  - descriptor
-  - serial
+- serial
 
 Device (old)
 - sever (interface)

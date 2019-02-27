@@ -73,7 +73,7 @@ func (d *Device) ForwardList() ([][2]ForwardSpec, error) {
 		return nil, err
 	}
 
-	fields := strings.Fields(attr)
+	fields := strings.Fields(string(attr))
 	if len(fields)%3 != 0 {
 		return nil, errors.Errorf("list forward parse error")
 	}

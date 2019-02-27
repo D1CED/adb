@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/pkg/errors"
 )
@@ -14,8 +15,8 @@ const (
 )
 
 // use this only for short writes
-func sendMessage(w io.Writer, header, msg string) error {
-	n, err := w.Write([]byte(fmt.Sprintf("%04x%s%s", len(header)+len(msg), header, msg)))
+func sendMessage(w io.Writer, msg string) error {
+	n, err := w.Write([]byte(fmt.Sprintf("%04x%s", len(msg), msg)))
 	if err != nil {
 		return err
 	}
@@ -130,4 +131,36 @@ func readBytes(r io.Reader, acceptStatus ...string) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+func requestResponseBytes(address, msg string) ([]byte, error) {
+	conn, err := dial(address)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	err = sendMessage(conn, msg)
+	if err != nil {
+		return nil, err
+	}
+
+	return readBytes(conn)
+}
+
+func send(address, msg string) error {
+	conn, err := dial(address)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	err = sendMessage(conn, msg)
+	if err != nil {
+		return err
+	}
+
+	return wantStatus(conn)
 }
