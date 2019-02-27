@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/pkg/errors"
@@ -61,9 +62,12 @@ func wantStatus(r io.Reader, acceptStatus ...string) error {
 		if err != nil {
 			return err
 		}
-		length := binary.LittleEndian.Uint32(buf)
+		length, err := strconv.ParseUint(string(buf), 16, 16)
+		if err != nil {
+			return errors.Wrapf(err, "imparseable length: %s", buf)
+		}
 		errMsg := make([]byte, length)
-		_, err := io.ReadFull(r, errMsg)
+		_, err = io.ReadFull(r, errMsg)
 		if err != nil {
 			return err
 		}
@@ -99,9 +103,13 @@ func readBytes(r io.Reader, acceptStatus ...string) ([]byte, error) {
 		return nil, err
 	}
 	status := string(head[:4])
+	length, err := strconv.ParseUint(string(head[4:]), 16, 16)
+	if err != nil {
+		return nil, errors.Wrapf(err, "length could not be parsed %s", head[4:])
+	}
 
 	if status == statusFail {
-		buf := make([]byte, binary.LittleEndian.Uint32(head[4:]))
+		buf := make([]byte, length)
 		_, err := io.ReadFull(r, buf)
 		if err != nil {
 			return nil, err
@@ -125,7 +133,7 @@ func readBytes(r io.Reader, acceptStatus ...string) ([]byte, error) {
 			return nil, &UnexpectedStatusError{acceptStatus, status}
 		}
 	}
-	buf := make([]byte, binary.LittleEndian.Uint32(head[4:]))
+	buf := make([]byte, length)
 	_, err = io.ReadFull(r, buf)
 	if err != nil {
 		return nil, err

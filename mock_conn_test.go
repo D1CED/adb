@@ -25,8 +25,8 @@ type mockConn struct {
 	t        *testing.T
 }
 
-func mockDial(t *testing.T, in, out string) func(n, a string) (net.Conn, error) {
-	return func(network, address string) (net.Conn, error) {
+func mockDial(t *testing.T, in, out string) func(a string) (net.Conn, error) {
+	return func(address string) (net.Conn, error) {
 		return &mockConn{
 			out:  []byte(out),
 			in:   []byte(in),
