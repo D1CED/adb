@@ -75,13 +75,16 @@ implement os.FileInfo for dir_entries
 device info remove map allocations
 device watcher implement shutdown
 device watcher map allocation in loop
+move cmd/demo and cmd/raw-adb to example files
 
 ## TODO:
 think about features of device_extra (what to keep/remove?)
 write more tests (table driven style)
 track (potential) leakages
-move cmd/demo and cmd/raw-adb to example files
 fix device watcher 'calculateStateDiffs'
+implement io.Closer for deviceWatcher
+expose low-level adb interface
+implement formatter for deviceInfo
 
 Notice About hierarchy flattening:
 See: https://github.com/golang/go/wiki/CodeReviewComments#interfaces

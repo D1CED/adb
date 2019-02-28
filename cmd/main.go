@@ -10,6 +10,9 @@ import (
 
 	"github.com/alecthomas/kingpin"
 	"github.com/cheggaaa/pb"
+	"github.com/pkg/errors"
+
+	"github.com/d1ced/adb"
 )
 
 const StdIoFilename = "-"
@@ -70,13 +73,13 @@ var (
 		String()
 )
 
-var client *adb.Adb
+var client *adb.Server
 
 func main() {
 	var exitCode int
 
 	var err error
-	client, err = adb.NewWithConfig(adb.ServerConfig{})
+	client, err = adb.NewDefault()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -86,24 +89,16 @@ func main() {
 	case "devices":
 		exitCode = listDevices(*devicesLongFlag)
 	case "shell":
-		exitCode = runShellCommand(*shellCommandArg, parseDevice())
+		exitCode = runShellCommand(*shellCommandArg, *serial)
 	case "pull":
-		exitCode = pull(*pullProgressFlag, *pullRemoteArg, *pullLocalArg, parseDevice())
+		exitCode = pull(*pullProgressFlag, *pullRemoteArg, *pullLocalArg, *serial)
 	case "push":
-		exitCode = push(*pushProgressFlag, *pushLocalArg, *pushRemoteArg, parseDevice())
+		exitCode = push(*pushProgressFlag, *pushLocalArg, *pushRemoteArg, *serial)
 	case "forward":
-		exitCode = forward(*forwardListFlag, parseDevice())
+		exitCode = forward(*forwardListFlag, *serial)
 	}
 
 	os.Exit(exitCode)
-}
-
-func parseDevice() adb.DeviceDescriptor {
-	if *serial != "" {
-		return adb.DeviceWithSerial(*serial)
-	}
-
-	return adb.AnyDevice()
 }
 
 func listDevices(long bool) int {
@@ -115,12 +110,12 @@ func listDevices(long bool) int {
 
 	for _, device := range devices {
 		if long {
-			if device.Usb == "" {
+			if !device.IsUSB() {
 				fmt.Printf("%s\tproduct:%s model:%s device:%s\n",
-					device.Serial, device.Product, device.Model, device.DeviceInfo)
+					device.Serial, device.Product, device.Model, device)
 			} else {
 				fmt.Printf("%s\tusb:%s product:%s model:%s device:%s\n",
-					device.Serial, device.Usb, device.Product, device.Model, device.DeviceInfo)
+					device.Serial, device.USB, device.Product, device.Model, device)
 			}
 		} else {
 			fmt.Println(device.Serial)
@@ -130,7 +125,7 @@ func listDevices(long bool) int {
 	return 0
 }
 
-func runShellCommand(commandAndArgs []string, device adb.DeviceDescriptor) int {
+func runShellCommand(commandAndArgs []string, deviceSerial string) int {
 	if len(commandAndArgs) == 0 {
 		fmt.Fprintln(os.Stderr, "error: no command")
 		kingpin.Usage()
@@ -144,8 +139,8 @@ func runShellCommand(commandAndArgs []string, device adb.DeviceDescriptor) int {
 		args = commandAndArgs[1:]
 	}
 
-	client := client.Device(device)
-	output, err := client.RunCommand(command, args...)
+	client := client.Device(deviceSerial)
+	output, err := client.Command(command, args...).Output()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
@@ -155,20 +150,20 @@ func runShellCommand(commandAndArgs []string, device adb.DeviceDescriptor) int {
 	return 0
 }
 
-func forward(listForwards bool, device adb.DeviceDescriptor) int {
-	client := client.Device(device)
+func forward(listForwards bool, deviceSerial string) int {
+	client := client.Device(deviceSerial)
 	fws, err := client.ForwardList()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
 	}
 	for _, fw := range fws {
-		fmt.Printf("%v %v %v\n", fw.Serial, fw.Local, fw.Remote)
+		fmt.Printf("%v %v %v\n", client.String(), fw[0], fw[1])
 	}
 	return 0
 }
 
-func pull(showProgress bool, remotePath, localPath string, device adb.DeviceDescriptor) int {
+func pull(showProgress bool, remotePath, localPath string, deviceSerial string) int {
 	if remotePath == "" {
 		fmt.Fprintln(os.Stderr, "error: must specify remote file")
 		kingpin.Usage()
@@ -179,10 +174,10 @@ func pull(showProgress bool, remotePath, localPath string, device adb.DeviceDesc
 		localPath = filepath.Base(remotePath)
 	}
 
-	client := client.Device(device)
+	client := client.Device(deviceSerial)
 
 	info, err := client.Stat(remotePath)
-	if adb.HasErrCode(err, adb.ErrCode(adb.FileNoExistError)) {
+	if _, ok := errors.Cause(err).(*os.PathError); ok {
 		fmt.Fprintln(os.Stderr, "remote file does not exist:", remotePath)
 		return 1
 	} else if err != nil {
@@ -190,9 +185,9 @@ func pull(showProgress bool, remotePath, localPath string, device adb.DeviceDesc
 		return 1
 	}
 
-	remoteFile, err := client.OpenRead(remotePath)
+	remoteFile, err := client.ReadFile(remotePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening remote file %s: %s\n", remotePath, adb.ErrorWithCauseChain(err))
+		fmt.Fprintf(os.Stderr, "error opening remote file %s: %s\n", remotePath, errors.Cause(err))
 		return 1
 	}
 	defer remoteFile.Close()
@@ -209,14 +204,14 @@ func pull(showProgress bool, remotePath, localPath string, device adb.DeviceDesc
 	}
 	defer localFile.Close()
 
-	if err := copyWithProgressAndStats(localFile, remoteFile, int(info.Size), showProgress); err != nil {
+	if err := copyWithProgressAndStats(localFile, remoteFile, int(info.Size()), showProgress); err != nil {
 		fmt.Fprintln(os.Stderr, "error pulling file:", err)
 		return 1
 	}
 	return 0
 }
 
-func push(showProgress bool, localPath, remotePath string, device adb.DeviceDescriptor) int {
+func push(showProgress bool, localPath, remotePath string, deviceSerial string) int {
 	if remotePath == "" {
 		fmt.Fprintln(os.Stderr, "error: must specify remote file")
 		kingpin.Usage()
@@ -233,7 +228,7 @@ func push(showProgress bool, localPath, remotePath string, device adb.DeviceDesc
 		localFile = os.Stdin
 		// 0 size will hide the progress bar.
 		perms = os.FileMode(0660)
-		mtime = adb.MtimeOfClose
+		mtime = time.Time{}
 	} else {
 		var err error
 		localFile, err = os.Open(localPath)
@@ -252,7 +247,7 @@ func push(showProgress bool, localPath, remotePath string, device adb.DeviceDesc
 	}
 	defer localFile.Close()
 
-	client := client.Device(device)
+	client := client.Device(deviceSerial)
 	writer, err := client.OpenWrite(remotePath, perms, mtime)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error opening remote file %s: %s\n", remotePath, err)

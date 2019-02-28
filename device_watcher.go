@@ -120,9 +120,9 @@ func (w *DeviceWatcher) Err() error {
 	return err
 }
 
-// Shutdown stops the watcher from listening for events and closes the channel
+// Close stops the watcher from listening for events and closes the channel
 // returned from C.
-func (w *DeviceWatcher) Shutdown() {
+func (w *DeviceWatcher) Close() {
 	close(w.cancel)
 }
 
