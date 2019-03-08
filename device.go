@@ -14,8 +14,8 @@ type Device struct {
 // String returns the devices serial-number.
 func (d *Device) String() string {
 	// return d.descriptor.String()
-	s, _ := d.Serial()
-	return s
+	// s, _ := d.Serial()
+	return d.serial
 }
 
 // getAttribute returns the message send by the server when requesting
@@ -70,9 +70,7 @@ func (d *Device) DeviceInfo() (DeviceInfo, error) {
 		}
 	}
 
-	return DeviceInfo{}, errors.WithMessage(
-		errors.Wrapf(ErrAssertionViolation, "device list doesn't contain serial %s", d.serial),
-		"DeviceInfo")
+	return DeviceInfo{}, errors.Errorf("device list doesn't contain serial %s", d.serial)
 }
 
 /*

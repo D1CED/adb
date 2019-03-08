@@ -115,14 +115,24 @@ func (s *Server) ListDeviceSerials() ([]string, error) {
 }
 
 // Device takes a devices serial number and returns it.
+// Returns nil on error.
 func (s *Server) Device(serial string) *Device {
+	ds, err := s.ListDeviceSerials()
+	if err != nil {
+		return nil
+	}
+	found := false
+	for _, s := range ds {
+		if s == serial {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
 	return &Device{
 		server: &(*s), // copy server
 		serial: serial,
 	}
-}
-
-// NewDeviceWatcher starts a new device watcher.
-func (s *Server) NewDeviceWatcher() (*DeviceWatcher, error) {
-	return newDeviceWatcher(s)
 }

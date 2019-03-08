@@ -5,11 +5,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/pkg/errors"
 )
@@ -21,8 +19,9 @@ import (
 //     Plugged in: StateDisconnected->StateOffline->StateOnline
 //     Unplugged:  StateOnline->StateDisconnected
 //
-//go:generate stringer -type=DeviceState
 type DeviceState uint8
+
+//go:generate stringer -type=DeviceState
 
 const (
 	StateInvalid DeviceState = iota
@@ -69,19 +68,15 @@ func (e DeviceStateChangedEvent) WentOffline() bool {
 // DeviceWatcher publishes device status change events.
 // If the server dies while listening for events, it restarts the server.
 type DeviceWatcher struct {
-	server *Server
-
-	conn net.Conn
-
-	// If an error occurs, it is stored here and eventChan is close immediately after.
-	err atomic.Value
-
+	server    *Server
+	conn      net.Conn
+	err       atomic.Value
 	eventChan chan DeviceStateChangedEvent
-
-	cancel chan struct{}
+	cancel    chan struct{}
 }
 
-func newDeviceWatcher(s *Server) (*DeviceWatcher, error) {
+// NewDeviceWatcher starts a new device watcher.
+func (s *Server) NewDeviceWatcher() (*DeviceWatcher, error) {
 	conn, err := dial(s.address)
 	if err != nil {
 		return nil, err
@@ -98,11 +93,10 @@ func newDeviceWatcher(s *Server) (*DeviceWatcher, error) {
 
 	watcher := &DeviceWatcher{
 		server:    s,
-		eventChan: make(chan DeviceStateChangedEvent),
+		eventChan: make(chan DeviceStateChangedEvent, 1),
 		cancel:    make(chan struct{}),
 		conn:      conn,
 	}
-	// runtime.SetFinalizer(watcher, func(watcher *DeviceWatcher) { watcher.Shutdown() })
 	go publishDevices(watcher)
 	return watcher, nil
 }
@@ -121,57 +115,50 @@ func (w *DeviceWatcher) Err() error {
 }
 
 // Close stops the watcher from listening for events and closes the channel
-// returned from C.
-func (w *DeviceWatcher) Close() {
-	close(w.cancel)
+// returned from C. Don't double close a DeviceWatcher.
+func (w *DeviceWatcher) Close() error {
+	w.cancel <- struct{}{}
+	<-w.cancel
+	err, _ := w.err.Load().(error)
+	return err
 }
 
-// EDIT(jmh): Will recursively restart. Revisit this.
-func publishDevices(watcher *DeviceWatcher) {
-	defer close(watcher.eventChan)
-
-	// pre do it for no async mess
-	defer watcher.conn.Close()
-
-	err := publishDevicesUntilError(watcher.conn, watcher.eventChan, watcher.cancel)
-
-	if errors.Cause(err) == ErrConnectionReset {
-		// The server died, restart and reconnect.
-
-		// Delay by a random [0ms, 500ms) in case multiple
-		// DeviceWatchers are trying to start the same server.
-		delay := time.Duration(rand.Intn(500)) * time.Millisecond
-		fmt.Printf("[DeviceWatcher] server died, restarting in %s…", delay)
-		time.Sleep(delay)
-
-		if err := start(watcher.server); err != nil {
-			fmt.Println("[DeviceWatcher] error restarting server, giving up")
-			watcher.err.Store(err)
-			return
+func publishDevices(dw *DeviceWatcher) {
+	defer func() {
+		err := dw.conn.Close()
+		if err != nil && dw.err.Load() == nil {
+			dw.err.Store(err)
 		}
-		publishDevices(watcher)
-	} else if err != nil {
-		// Unknown error, don't retry.
-		watcher.err.Store(err)
-	}
-}
+	}()
+	defer close(dw.cancel)
 
-func publishDevicesUntilError(r io.Reader, eventChan chan<- DeviceStateChangedEvent, cancel <-chan struct{}) error {
 	lastState := make(map[string]DeviceState)
 	devState := make([]serialDeviceState, 0, 8)
 	for {
 		select {
-		case <-cancel:
-			close(eventChan)
-			return nil
+		case <-dw.cancel:
+			close(dw.eventChan)
+			return
 		default:
 		}
-		msg, err := readBytes(r)
-		if err != nil {
-			return err
+		msg, err := readBytes(dw.conn)
+		if errors.Cause(err) == ErrConnectionReset {
+			// The server died, restart and reconnect.
+			err := start(dw.server)
+			if err != nil {
+				fmt.Println("[DeviceWatcher] error restarting server, giving up")
+				dw.err.Store(err)
+				return
+			}
+			continue
+		} else if err != nil {
+			// Unknown error, don't retry.
+			dw.err.Store(err)
+			close(dw.eventChan)
+			return
 		}
 		deviceStates := parseDeviceStates(bytes.NewReader(msg), devState)
-		calculateStateDiffs(deviceStates, lastState, eventChan)
+		calculateStateDiffs(deviceStates, lastState, dw.eventChan)
 	}
 }
 
@@ -205,6 +192,15 @@ func calculateStateDiffs(
 	deviceStates map[string]DeviceState,
 	ch chan<- DeviceStateChangedEvent) {
 
+	var notContains = func(s string) bool {
+		for _, t := range lastState {
+			if t.serial == s {
+				return false
+			}
+		}
+		return true
+	}
+
 	for _, sta := range lastState {
 		if old := deviceStates[sta.serial]; sta.state != old {
 			ch <- DeviceStateChangedEvent{
@@ -215,7 +211,15 @@ func calculateStateDiffs(
 			deviceStates[sta.serial] = sta.state
 		}
 	}
-	// check opposite case
-	// what fields are in map but not in slice
-	// send event and delete from map
+
+	for s := range deviceStates {
+		if notContains(s) {
+			ch <- DeviceStateChangedEvent{
+				Serial:   s,
+				OldState: deviceStates[s],
+				NewState: StateDisconnected,
+			}
+			delete(deviceStates, s)
+		}
+	}
 }

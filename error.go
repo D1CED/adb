@@ -12,8 +12,6 @@ import (
 
 // Sentinel error values used by this package
 var (
-	ErrPackageNotExist    = errors.New("package does not exist")
-	ErrAssertionViolation = errors.New("assertion violation")
 	// The connection to the server was reset in the middle of an operation. Server probably died.
 	ErrConnectionReset = errors.New("connection reset")
 	// Tried to perform an operation on a path that doesn't exist on the device.

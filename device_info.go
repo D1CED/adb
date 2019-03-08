@@ -2,6 +2,7 @@ package adb
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"strings"
 
@@ -23,6 +24,16 @@ type DeviceInfo struct {
 // remove?
 func (d DeviceInfo) IsUSB() bool {
 	return d.USB != ""
+}
+
+func FormatDeviceInfo(dd []DeviceInfo) string {
+	f := new(strings.Builder)
+	fmt.Fprintln(f, "Serial Product Model Device USB")
+	for _, d := range dd {
+		fmt.Fprintf(f, "%6s %7s %5s %6s %3s\n",
+			d.Serial, d.Product, d.Model, d.Device, d.USB)
+	}
+	return f.String()
 }
 
 func parseDeviceList(list io.Reader, lineParseFunc func(string) (DeviceInfo, error)) ([]DeviceInfo, error) {
