@@ -8,26 +8,6 @@ feature or bug request.*
 The reason for this fork was that I wasn't happy with the internals.
 There were simply too many types and it seemd overcomplex.
 
-<!-- I flattend most structs, integrated the for what ever reason internal
-error package and the wire package. Now functions found in the io.go file
-contain some of this functionality. Error handling was in a lot of places
-overkill so I replaced all of it simply with github.com/pkg/errors.
-Return parameters were used in some places, I removed them for the most
-part. In a lot of places strings or []bytes where used when io.Readers
-would made more sense. I made use of io.Copy in some places one of the
-most important functions in Go IMO.
-
-A quick note about finalizers and goroutines:
-If you start a gorutine and a reference to an object lives on its stack
-the object will never be deallocated so the finalizer will never be run.
-*Again do not use finalizers!*
--->
-
-The only thing I'm currently sorry about is that I ripped out all tests.
-The package was designed with a TDD approach, at least I think so and
-use of small unittest was common. I favour table driven tests as they are more
-idiomatic in Go so the next step is to add them back.
-
 If you are looking for a propper adb client library in Go, take a look
 a the implementation provided by Google.
 
@@ -73,9 +53,9 @@ change ForwartSpec to a simple string
 implement os.FileInfo for dir_entries
 move cmd/demo and cmd/raw-adb to example files
 implement formatter for deviceInfo
+think about features of device_extra (what to keep/remove?)
 
 ## TODO:
-think about features of device_extra (what to keep/remove?)
 write more tests (table driven style)
 track (potential) leakages
 expose low-level adb interface

@@ -18,68 +18,55 @@ import (
 const StdIoFilename = "-"
 
 var (
-	serial = kingpin.Flag("serial",
-		"Connect to device by serial number.").
+	serial = kingpin.Flag("serial", "Connect to device by serial number.").
 		Short('s').
 		String()
 
-	shellCommand = kingpin.Command("shell",
-		"Run a shell command on the device.")
-	shellCommandArg = shellCommand.Arg("command",
-		"Command to run on device.").
-		Strings()
+	shellCommand    = kingpin.Command("shell", "Run a shell command on the device.")
+	shellCommandArg = shellCommand.Arg("command", "Command to run on device.").
+			Strings()
 
-	devicesCommand = kingpin.Command("devices",
-		"List devices.")
-	devicesLongFlag = devicesCommand.Flag("long",
-		"Include extra detail about devices.").
-		Short('l').
-		Bool()
+	devicesCommand  = kingpin.Command("devices", "List devices.")
+	devicesLongFlag = devicesCommand.Flag("long", "Include extra detail about devices.").
+			Short('l').
+			Bool()
 
-	forwardCommand = kingpin.Command("forward",
-		"Forward")
-	forwardListFlag = forwardCommand.Flag("list",
-		"List forwards").
-		Short('l').
-		Bool()
+	forwardCommand  = kingpin.Command("forward", "Forward")
+	forwardListFlag = forwardCommand.Flag("list", "List forwards").
+			Short('l').
+			Bool()
 
-	pullCommand = kingpin.Command("pull",
-		"Pull a file from the device.")
-	pullProgressFlag = pullCommand.Flag("progress",
-		"Show progress.").
-		Short('p').
-		Bool()
-	pullRemoteArg = pullCommand.Arg("remote",
-		"Path of source file on device.").
-		Required().
-		String()
-	pullLocalArg = pullCommand.Arg("local",
-		"Path of destination file. If -, will write to stdout.").
-		String()
+	pullCommand      = kingpin.Command("pull", "Pull a file from the device.")
+	pullProgressFlag = pullCommand.Flag("progress", "Show progress.").
+				Short('p').
+				Bool()
+	pullRemoteArg = pullCommand.Arg("remote", "Path of source file on device.").
+			Required().
+			String()
+	pullLocalArg = pullCommand.Arg("local", "Path of destination file. If -, will write to stdout.").
+			String()
 
-	pushCommand = kingpin.Command("push",
-		"Push a file to the device.")
-	pushProgressFlag = pushCommand.Flag("progress",
-		"Show progress.").
-		Short('p').
-		Bool()
-	pushLocalArg = pushCommand.Arg("local",
-		"Path of source file. If -, will read from stdin.").
-		Required().
-		String()
-	pushRemoteArg = pushCommand.Arg("remote",
-		"Path of destination file on device.").
-		Required().
-		String()
+	pushCommand      = kingpin.Command("push", "Push a file to the device.")
+	pushProgressFlag = pushCommand.Flag("progress", "Show progress.").
+				Short('p').
+				Bool()
+	pushLocalArg = pushCommand.Arg("local", "Path of source file. If -, will read from stdin.").
+			Required().
+			String()
+	pushRemoteArg = pushCommand.Arg("remote", "Path of destination file on device.").
+			Required().
+			String()
 )
 
-var client *adb.Server
+type userError struct{ error }
+
+func (ue userError) Error() string {
+	kingpin.Usage()
+	return ue.error.Error()
+}
 
 func main() {
-	var exitCode int
-
-	var err error
-	client, err = adb.NewDefault()
+	client, err := adb.NewDefault()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -87,25 +74,28 @@ func main() {
 
 	switch kingpin.Parse() {
 	case "devices":
-		exitCode = listDevices(*devicesLongFlag)
+		err = listDevices(client, *devicesLongFlag)
 	case "shell":
-		exitCode = runShellCommand(*shellCommandArg, *serial)
+		err = runShellCommand(client, *shellCommandArg, *serial)
 	case "pull":
-		exitCode = pull(*pullProgressFlag, *pullRemoteArg, *pullLocalArg, *serial)
+		err = pull(client, *pullProgressFlag, *pullRemoteArg, *pullLocalArg, *serial)
 	case "push":
-		exitCode = push(*pushProgressFlag, *pushLocalArg, *pushRemoteArg, *serial)
+		err = push(client, *pushProgressFlag, *pushLocalArg, *pushRemoteArg, *serial)
 	case "forward":
-		exitCode = forward(*forwardListFlag, *serial)
+		err = forward(client, *forwardListFlag, *serial)
 	}
 
-	os.Exit(exitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 }
 
-func listDevices(long bool) int {
+func listDevices(client *adb.Server, long bool) error {
 	//client := adb.New(server)
 	devices, err := client.ListDevices()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		return err
 	}
 
 	for _, device := range devices {
@@ -122,14 +112,12 @@ func listDevices(long bool) int {
 		}
 	}
 
-	return 0
+	return nil
 }
 
-func runShellCommand(commandAndArgs []string, deviceSerial string) int {
+func runShellCommand(client *adb.Server, commandAndArgs []string, deviceSerial string) error {
 	if len(commandAndArgs) == 0 {
-		fmt.Fprintln(os.Stderr, "error: no command")
-		kingpin.Usage()
-		return 1
+		return userError{fmt.Errorf("no command")}
 	}
 
 	command := commandAndArgs[0]
@@ -139,56 +127,49 @@ func runShellCommand(commandAndArgs []string, deviceSerial string) int {
 		args = commandAndArgs[1:]
 	}
 
-	client := client.Device(deviceSerial)
-	output, err := client.Command(command, args...).Output()
+	device := client.Device(deviceSerial)
+	output, err := device.Command(command, args...).Output()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+		return err
 	}
 
 	fmt.Print(output)
-	return 0
+	return nil
 }
 
-func forward(listForwards bool, deviceSerial string) int {
-	client := client.Device(deviceSerial)
-	fws, err := client.ForwardList()
+func forward(client *adb.Server, listForwards bool, deviceSerial string) error {
+	device := client.Device(deviceSerial)
+	fws, err := device.ForwardList()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		return 1
+		return err
 	}
 	for _, fw := range fws {
-		fmt.Printf("%v %v %v\n", client.String(), fw[0], fw[1])
+		fmt.Printf("%s %v %v\n", device, fw[0], fw[1])
 	}
-	return 0
+	return nil
 }
 
-func pull(showProgress bool, remotePath, localPath string, deviceSerial string) int {
+func pull(client *adb.Server, showProgress bool, remotePath, localPath string, deviceSerial string) error {
 	if remotePath == "" {
-		fmt.Fprintln(os.Stderr, "error: must specify remote file")
-		kingpin.Usage()
-		return 1
+		return userError{fmt.Errorf("must specify remote file")}
 	}
 
 	if localPath == "" {
 		localPath = filepath.Base(remotePath)
 	}
 
-	client := client.Device(deviceSerial)
+	device := client.Device(deviceSerial)
 
-	info, err := client.Stat(remotePath)
+	info, err := device.Stat(remotePath)
 	if _, ok := errors.Cause(err).(*os.PathError); ok {
-		fmt.Fprintln(os.Stderr, "remote file does not exist:", remotePath)
-		return 1
+		return fmt.Errorf("remote file does not exist: %v", remotePath)
 	} else if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading remote file %s: %s\n", remotePath, err)
-		return 1
+		return fmt.Errorf("failed reading remote file %s: %s", remotePath, err)
 	}
 
-	remoteFile, err := client.ReadFile(remotePath)
+	remoteFile, err := device.ReadFile(remotePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening remote file %s: %s\n", remotePath, errors.Cause(err))
-		return 1
+		return fmt.Errorf("failed opening remote file %s: %v", remotePath, errors.Cause(err))
 	}
 	defer remoteFile.Close()
 
@@ -198,24 +179,20 @@ func pull(showProgress bool, remotePath, localPath string, deviceSerial string) 
 	} else {
 		localFile, err = os.Create(localPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error opening local file %s: %s\n", localPath, err)
-			return 1
+			return fmt.Errorf("error opening local file %s: %v", localPath, err)
 		}
 	}
 	defer localFile.Close()
 
 	if err := copyWithProgressAndStats(localFile, remoteFile, int(info.Size()), showProgress); err != nil {
-		fmt.Fprintln(os.Stderr, "error pulling file:", err)
-		return 1
+		return fmt.Errorf("failed pulling file: %v", err)
 	}
-	return 0
+	return nil
 }
 
-func push(showProgress bool, localPath, remotePath string, deviceSerial string) int {
+func push(client *adb.Server, showProgress bool, localPath, remotePath string, deviceSerial string) error {
 	if remotePath == "" {
-		fmt.Fprintln(os.Stderr, "error: must specify remote file")
-		kingpin.Usage()
-		return 1
+		return userError{fmt.Errorf("must specify remote file")}
 	}
 
 	var (
@@ -233,13 +210,11 @@ func push(showProgress bool, localPath, remotePath string, deviceSerial string) 
 		var err error
 		localFile, err = os.Open(localPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error opening local file %s: %s\n", localPath, err)
-			return 1
+			return fmt.Errorf("failed opening local file %s: %v", localPath, err)
 		}
 		info, err := os.Stat(localPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error reading local file %s: %s\n", localPath, err)
-			return 1
+			return fmt.Errorf("failed reading local file %s: %v", localPath, err)
 		}
 		size = int(info.Size())
 		perms = info.Mode().Perm()
@@ -247,19 +222,17 @@ func push(showProgress bool, localPath, remotePath string, deviceSerial string) 
 	}
 	defer localFile.Close()
 
-	client := client.Device(deviceSerial)
-	writer, err := client.OpenWrite(remotePath, perms, mtime)
+	device := client.Device(deviceSerial)
+	writer, err := device.OpenWrite(remotePath, perms, mtime)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening remote file %s: %s\n", remotePath, err)
-		return 1
+		return fmt.Errorf("failed opening remote file %s: %v", remotePath, err)
 	}
 	defer writer.Close()
 
 	if err := copyWithProgressAndStats(writer, localFile, size, showProgress); err != nil {
-		fmt.Fprintln(os.Stderr, "error pushing file:", err)
-		return 1
+		return fmt.Errorf("failed pushing file: %v", err)
 	}
-	return 0
+	return nil
 }
 
 // copyWithProgressAndStats copies src to dst.
